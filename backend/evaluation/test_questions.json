@@ -1,0 +1,135 @@
+[
+  {
+    "id": 1,
+    "question": "What is the transformer architecture and how does it differ from previous sequence-to-sequence models?",
+    "category": "Architecture",
+    "expected_topics": [
+      "self-attention",
+      "encoder-decoder",
+      "positional encoding",
+      "parallel processing"
+    ],
+    "difficulty": "intermediate",
+    "context_memory": false
+  },
+  {
+    "id": 2,
+    "question": "How does BERT's bidirectional training approach differ from traditional language models?",
+    "category": "Training",
+    "expected_topics": [
+      "bidirectional",
+      "masked language modeling",
+      "next sentence prediction",
+      "pre-training"
+    ],
+    "difficulty": "intermediate",
+    "context_memory": false
+  },
+  {
+    "id": 3,
+    "question": "What are the key innovations introduced in GPT-3 and how do they enable few-shot learning?",
+    "category": "Innovation",
+    "expected_topics": [
+      "scale",
+      "in-context learning",
+      "few-shot",
+      "emergent abilities",
+      "autoregressive"
+    ],
+    "difficulty": "advanced",
+    "context_memory": false
+  },
+  {
+    "id": 4,
+    "question": "Explain the concept of attention mechanism. How does it work in transformers?",
+    "category": "Mechanism",
+    "expected_topics": [
+      "attention weights",
+      "query",
+      "key",
+      "value",
+      "scaled dot-product"
+    ],
+    "difficulty": "intermediate",
+    "context_memory": false
+  },
+  {
+    "id": 5,
+    "question": "What improvements does RoBERTa make over the original BERT model?",
+    "category": "Improvement",
+    "expected_topics": [
+      "optimization",
+      "training strategy",
+      "hyperparameters",
+      "dynamic masking"
+    ],
+    "difficulty": "intermediate",
+    "context_memory": true
+  },
+  {
+    "id": 6,
+    "question": "Can you compare the training objectives of BERT and GPT models? What are the implications?",
+    "category": "Comparison",
+    "expected_topics": [
+      "bidirectional vs autoregressive",
+      "masked LM",
+      "causal LM",
+      "downstream tasks"
+    ],
+    "difficulty": "advanced",
+    "context_memory": true
+  },
+  {
+    "id": 7,
+    "question": "How does T5 implement the text-to-text transfer approach? What are its advantages?",
+    "category": "Framework",
+    "expected_topics": [
+      "text-to-text",
+      "unified framework",
+      "transfer learning",
+      "multi-task"
+    ],
+    "difficulty": "intermediate",
+    "context_memory": false
+  },
+  {
+    "id": 8,
+    "question": "What is positional encoding in transformers and why is it necessary?",
+    "category": "Technical",
+    "expected_topics": [
+      "position information",
+      "sinusoidal encoding",
+      "sequence order",
+      "permutation invariance"
+    ],
+    "difficulty": "intermediate",
+    "context_memory": false
+  },
+  {
+    "id": 9,
+    "question": "From our previous discussion about attention and BERT's bidirectional training, how do these concepts work together in practice?",
+    "category": "Synthesis",
+    "expected_topics": [
+      "attention",
+      "bidirectional",
+      "context understanding",
+      "representation learning"
+    ],
+    "difficulty": "advanced",
+    "context_memory": true
+  },
+  {
+    "id": 10,
+    "question": "What are the computational and practical challenges of scaling language models, as demonstrated by GPT-3?",
+    "category": "Challenges",
+    "expected_topics": [
+      "computational cost",
+      "memory requirements",
+      "training time",
+      "inference",
+      "deployment"
+    ],
+    "difficulty": "advanced",
+    "context_memory": false
+  }
+]
