@@ -1,0 +1,38 @@
+# Python virtual environment
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Downloaded PDFs (these are downloaded automatically)
+data/pdfs/*.pdf
+
+# Processed data files
+data/chunks/*.json
+data/vector_db/
+
+# Model files and caches
+models/
+.cache/
+.huggingface/
+
+# FAISS index files
+*.index
+*.pkl
+
+# Environment variables
+.env
+
+# Evaluation results
+evaluation/evaluation_results.json
+evaluation/*.pdf
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp 

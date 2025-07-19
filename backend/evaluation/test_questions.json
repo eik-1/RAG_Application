@@ -1,135 +1,72 @@
 [
   {
     "id": 1,
-    "question": "What is the transformer architecture and how does it differ from previous sequence-to-sequence models?",
+    "question": "What is the main innovation introduced in the Transformer architecture and how does it differ from previous sequence-to-sequence models?",
     "category": "Architecture",
-    "expected_topics": [
-      "self-attention",
-      "encoder-decoder",
-      "positional encoding",
-      "parallel processing"
-    ],
-    "difficulty": "intermediate",
-    "context_memory": false
+    "expected_sources": ["attention_is_all_you_need"],
+    "difficulty": "medium"
   },
   {
     "id": 2,
-    "question": "How does BERT's bidirectional training approach differ from traditional language models?",
-    "category": "Training",
-    "expected_topics": [
-      "bidirectional",
-      "masked language modeling",
-      "next sentence prediction",
-      "pre-training"
-    ],
-    "difficulty": "intermediate",
-    "context_memory": false
+    "question": "How does BERT's bidirectional training differ from traditional language models, and what advantages does this provide?",
+    "category": "Training Method",
+    "expected_sources": ["bert_pretraining"],
+    "difficulty": "medium"
   },
   {
     "id": 3,
-    "question": "What are the key innovations introduced in GPT-3 and how do they enable few-shot learning?",
-    "category": "Innovation",
-    "expected_topics": [
-      "scale",
-      "in-context learning",
-      "few-shot",
-      "emergent abilities",
-      "autoregressive"
-    ],
-    "difficulty": "advanced",
-    "context_memory": false
+    "question": "What is few-shot learning in the context of GPT-3, and how does it demonstrate emergent capabilities?",
+    "category": "Capabilities",
+    "expected_sources": ["gpt3_language_models"],
+    "difficulty": "hard"
   },
   {
     "id": 4,
-    "question": "Explain the concept of attention mechanism. How does it work in transformers?",
-    "category": "Mechanism",
-    "expected_topics": [
-      "attention weights",
-      "query",
-      "key",
-      "value",
-      "scaled dot-product"
-    ],
-    "difficulty": "intermediate",
-    "context_memory": false
+    "question": "What modifications did RoBERTa make to BERT's training procedure and why were these changes beneficial?",
+    "category": "Optimization",
+    "expected_sources": ["roberta_optimization"],
+    "difficulty": "medium"
   },
   {
     "id": 5,
-    "question": "What improvements does RoBERTa make over the original BERT model?",
-    "category": "Improvement",
-    "expected_topics": [
-      "optimization",
-      "training strategy",
-      "hyperparameters",
-      "dynamic masking"
-    ],
-    "difficulty": "intermediate",
-    "context_memory": true
+    "question": "How does T5's text-to-text framework unify different NLP tasks, and what are some examples of this unification?",
+    "category": "Framework",
+    "expected_sources": ["t5_text_to_text"],
+    "difficulty": "medium"
   },
   {
     "id": 6,
-    "question": "Can you compare the training objectives of BERT and GPT models? What are the implications?",
+    "question": "Compare the attention mechanisms used in Transformer and BERT. What are the key similarities and differences?",
     "category": "Comparison",
-    "expected_topics": [
-      "bidirectional vs autoregressive",
-      "masked LM",
-      "causal LM",
-      "downstream tasks"
-    ],
-    "difficulty": "advanced",
-    "context_memory": true
+    "expected_sources": ["attention_is_all_you_need", "bert_pretraining"],
+    "difficulty": "hard"
   },
   {
     "id": 7,
-    "question": "How does T5 implement the text-to-text transfer approach? What are its advantages?",
-    "category": "Framework",
-    "expected_topics": [
-      "text-to-text",
-      "unified framework",
-      "transfer learning",
-      "multi-task"
-    ],
-    "difficulty": "intermediate",
-    "context_memory": false
+    "question": "What role does scale play in the performance of large language models like GPT-3, and what evidence supports this?",
+    "category": "Scaling",
+    "expected_sources": ["gpt3_language_models"],
+    "difficulty": "medium"
   },
   {
     "id": 8,
-    "question": "What is positional encoding in transformers and why is it necessary?",
-    "category": "Technical",
-    "expected_topics": [
-      "position information",
-      "sinusoidal encoding",
-      "sequence order",
-      "permutation invariance"
-    ],
-    "difficulty": "intermediate",
-    "context_memory": false
+    "question": "How do the preprocessing steps in RoBERTa and T5 differ, and what impact do these differences have on model performance?",
+    "category": "Preprocessing",
+    "expected_sources": ["roberta_optimization", "t5_text_to_text"],
+    "difficulty": "hard"
   },
   {
     "id": 9,
-    "question": "From our previous discussion about attention and BERT's bidirectional training, how do these concepts work together in practice?",
-    "category": "Synthesis",
-    "expected_topics": [
-      "attention",
-      "bidirectional",
-      "context understanding",
-      "representation learning"
-    ],
-    "difficulty": "advanced",
-    "context_memory": true
+    "question": "What is the relationship between model size, training data, and computational requirements across these transformer-based models?",
+    "category": "Resources",
+    "expected_sources": ["attention_is_all_you_need", "bert_pretraining", "gpt3_language_models", "roberta_optimization", "t5_text_to_text"],
+    "difficulty": "hard"
   },
   {
     "id": 10,
-    "question": "What are the computational and practical challenges of scaling language models, as demonstrated by GPT-3?",
-    "category": "Challenges",
-    "expected_topics": [
-      "computational cost",
-      "memory requirements",
-      "training time",
-      "inference",
-      "deployment"
-    ],
-    "difficulty": "advanced",
-    "context_memory": false
+    "question": "How do these different transformer variants handle the trade-off between computational efficiency and model performance?",
+    "category": "Efficiency",
+    "expected_sources": ["attention_is_all_you_need", "bert_pretraining", "gpt3_language_models", "roberta_optimization", "t5_text_to_text"],
+    "difficulty": "hard"
   }
-]
+] 

@@ -1,151 +1,103 @@
-#!/usr/bin/env python3
-"""
-Main evaluation script for the RAG Application.
+"""Evaluation script for the RAG system."""
 
-This script runs the comprehensive evaluation framework on the RAG system,
-testing it with predefined questions and generating detailed metrics.
-
-Usage:
-    python evaluate.py [--clear-memory] [--output-dir DIR]
-"""
-
-import asyncio
-import argparse
 import sys
-from pathlib import Path
-from loguru import logger
-
-# Add the backend directory to the Python path
-sys.path.append(str(Path(__file__).parent))
-
-from evaluation.evaluation_framework import RAGEvaluationFramework
-from app.rag_system import rag_manager
+import argparse
+from app.rag_system import RAGSystem
+from evaluation.evaluation_framework import EvaluationFramework
 
 
-async def main():
+def main():
     """Main evaluation function."""
-    
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(
-        description="Evaluate the RAG Application with comprehensive metrics"
+    parser = argparse.ArgumentParser(description="Evaluate the RAG system")
+    parser.add_argument(
+        "mode", 
+        nargs='?', 
+        default="full",
+        choices=["full", "quick"],
+        help="Evaluation mode: 'full' for all questions, 'quick' for first 3 questions"
     )
     parser.add_argument(
-        '--clear-memory',
-        action='store_true',
-        help='Clear conversation memory between questions'
+        "--initialize",
+        action="store_true",
+        help="Initialize the system before evaluation"
     )
     parser.add_argument(
-        '--output-dir',
-        type=str,
-        default=None,
-        help='Directory to save evaluation results'
-    )
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Enable verbose logging'
+        "--rebuild",
+        action="store_true", 
+        help="Rebuild the system from scratch before evaluation"
     )
     
     args = parser.parse_args()
     
-    # Configure logging
-    log_level = "DEBUG" if args.verbose else "INFO"
-    logger.remove()
-    logger.add(sys.stderr, level=log_level, format="{time} | {level} | {message}")
+    print("🔍 RAG System Evaluation")
+    print("=" * 40)
     
-    logger.info("🚀 Starting RAG Application Evaluation")
-    logger.info("=" * 50)
+    # Initialize RAG system
+    print("🚀 Initializing RAG system...")
+    rag_system = RAGSystem()
     
     try:
-        # Initialize evaluation framework
-        evaluator = RAGEvaluationFramework()
+        # Initialize system
+        if args.rebuild:
+            print("🔄 Rebuilding system from scratch...")
+            result = rag_system.rebuild_system()
+        elif args.initialize or not rag_system.is_initialized:
+            print("⚙️  Initializing system...")
+            result = rag_system.initialize()
+        else:
+            # Try to load existing system
+            result = rag_system.initialize()
         
-        if args.output_dir:
-            evaluator.results_dir = Path(args.output_dir)
-            evaluator.results_dir.mkdir(parents=True, exist_ok=True)
+        if not result["success"]:
+            print(f"❌ System initialization failed: {result.get('error')}")
+            sys.exit(1)
+        
+        print("✅ System ready for evaluation")
+        
+        # Create evaluation framework
+        evaluator = EvaluationFramework(rag_system)
         
         # Run evaluation
-        logger.info("Running comprehensive evaluation...")
-        evaluation_results = await evaluator.run_evaluation(
-            clear_memory_between=args.clear_memory
-        )
+        quick_mode = (args.mode == "quick")
+        print(f"\n📊 Running {'quick' if quick_mode else 'full'} evaluation...")
+        
+        results = evaluator.run_evaluation(quick_mode=quick_mode)
         
         # Generate and display report
-        report = evaluator.generate_report(evaluation_results)
-        
-        print("\n" + "=" * 80)
+        print("\n" + "=" * 60)
         print("EVALUATION REPORT")
-        print("=" * 80)
+        print("=" * 60)
+        
+        report = evaluator.generate_report(results)
         print(report)
-        print("=" * 80)
         
-        # Save report to file
-        report_file = evaluator.results_dir / f"evaluation_report_{evaluation_results['timestamp'].replace(':', '-').replace('.', '-')}.md"
-        with open(report_file, 'w', encoding='utf-8') as f:
-            f.write(report)
+        # Summary
+        if results and "aggregate_statistics" in results:
+            stats = results["aggregate_statistics"]
+            if "average_overall_score" in stats:
+                score = stats["average_overall_score"]
+                print(f"\n🎯 FINAL SCORE: {score:.3f}/1.0 ({score*100:.1f}%)")
+                
+                # Performance categorization
+                if score >= 0.8:
+                    print("🌟 Excellent performance!")
+                elif score >= 0.6:
+                    print("👍 Good performance!")
+                elif score >= 0.4:
+                    print("⚠️  Moderate performance - room for improvement")
+                else:
+                    print("⚠️  Poor performance - significant improvements needed")
         
-        logger.success(f"📊 Evaluation completed successfully!")
-        logger.success(f"📄 Report saved to: {report_file}")
+        print(f"\n💾 Detailed results saved to: {evaluator.evaluation_results_file}")
+        print("✅ Evaluation completed successfully!")
         
-        # Print summary statistics
-        summary = evaluation_results['summary']
-        overall_score = summary['overall_metrics']['overall_score']['mean']
-        
-        print(f"\n🎯 OVERALL PERFORMANCE SCORE: {overall_score:.3f}/1.000")
-        
-        if overall_score >= 0.8:
-            print("🏆 Excellent performance!")
-        elif overall_score >= 0.6:
-            print("👍 Good performance!")
-        elif overall_score >= 0.4:
-            print("⚠️  Needs improvement")
-        else:
-            print("❌ Poor performance - review system configuration")
-        
-        return evaluation_results
-        
+    except KeyboardInterrupt:
+        print("\n⏹️  Evaluation interrupted by user")
+        sys.exit(0)
     except Exception as e:
-        logger.error(f"❌ Evaluation failed: {str(e)}")
-        logger.exception("Full error details:")
+        print(f"\n❌ Evaluation failed: {e}")
         sys.exit(1)
 
 
-def run_quick_test():
-    """Run a quick test with a single question."""
-    
-    async def quick_test():
-        logger.info("🔧 Running quick test...")
-        
-        # Initialize RAG system
-        rag_system = rag_manager.get_rag_system()
-        if not rag_system.is_initialized:
-            logger.info("Initializing RAG system...")
-            await rag_system.initialize()
-        
-        # Test with a simple question
-        test_question = "What is the transformer architecture?"
-        logger.info(f"Test question: {test_question}")
-        
-        response = await rag_system.query(test_question)
-        
-        print("\n" + "=" * 50)
-        print("QUICK TEST RESULT")
-        print("=" * 50)
-        print(f"Question: {test_question}")
-        print(f"Answer: {response.get('response', 'No response')}")
-        print(f"Sources: {len(response.get('sources', []))} found")
-        print(f"Top similarity: {response.get('retrieval_stats', {}).get('top_score', 0):.3f}")
-        print("=" * 50)
-        
-        logger.success("✅ Quick test completed!")
-    
-    asyncio.run(quick_test())
-
-
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "quick":
-        run_quick_test()
-    else:
-        asyncio.run(main()) 
+    main() 

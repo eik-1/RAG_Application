@@ -1,486 +1,354 @@
-import torch
-from typing import List, Dict, Any, Optional, Tuple
-from transformers import (
-    AutoTokenizer, 
-    AutoModelForCausalLM, 
-    pipeline,
-    GenerationConfig
-)
-from loguru import logger
-import re
-import signal
-import time
-from functools import wraps
+"""Language model integration for response generation."""
 
-from config import settings
+from typing import List, Dict, Any, Optional
+from config import LANGUAGE_MODEL, FALLBACK_MODEL, MAX_TOKENS
 
-
-def timeout_handler(signum, frame):
-    raise TimeoutError("Operation timed out")
-
-def with_timeout(timeout_seconds):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            # Set up the timeout
-            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(timeout_seconds)
-            
-            try:
-                result = func(*args, **kwargs)
-                return result
-            finally:
-                # Restore the old handler and cancel the alarm
-                signal.alarm(0)
-                signal.signal(signal.SIGALRM, old_handler)
-        return wrapper
-    return decorator
+# Try to import transformers, fall back to simple model if not available
+try:
+    import torch
+    from transformers import (
+        AutoTokenizer, AutoModelForCausalLM, 
+        T5Tokenizer, T5ForConditionalGeneration,
+        pipeline
+    )
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    print("⚠️  Transformers not available, using simple rule-based model")
+    TRANSFORMERS_AVAILABLE = False
+    try:
+        from .simple_language_model import SimpleLM
+    except ImportError:
+        # Define SimpleLM inline if import fails
+        SimpleLM = None
 
 
-class LanguageModelManager:
-    """Manager for loading and using open-source language models."""
+class LanguageModel:
+    """Handles language model integration and response generation."""
     
-    def __init__(self, model_name: str = None):
-        # Use a much lighter model for faster initialization
-        self.model_name = model_name or "gpt2"  # Changed from DialoGPT-medium
-        self.tokenizer = None
+    def __init__(self):
         self.model = None
-        self.generator = None
-        self.device = "cpu"  # Force CPU for reliability
-        self.is_model_loaded = False
+        self.tokenizer = None
+        self.fallback_model = None
+        self.fallback_tokenizer = None
+        self.simple_model = None
+        self.is_initialized = False
+        self.model_type = None
+    
+    def initialize(self):
+        """Initialize the language model and fallback model."""
+        print("Initializing language model...")
         
-    def load_model(self):
-        """Load the language model and tokenizer with timeout and better error handling."""
+        if not TRANSFORMERS_AVAILABLE:
+            # Use simple rule-based model when transformers not available
+            print("Using simple rule-based language model...")
+            self.simple_model = self._create_simple_model()
+            self.model_type = "simple_rule_based"
+            self.is_initialized = True
+            return
+        
         try:
-            logger.info(f"Loading lightweight language model: {self.model_name}")
-            logger.info(f"Using device: {self.device}")
-            
-            # Step 1: Load tokenizer (fast operation)
-            logger.info("Loading tokenizer...")
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, use_fast=True)
-            
-            # Add padding token if it doesn't exist
+            # Try to load primary model
+            self._load_primary_model()
+        except Exception as e:
+            print(f"Failed to load primary model: {e}")
+            print("Falling back to smaller model...")
+            try:
+                self._load_fallback_model()
+            except Exception as e2:
+                print(f"Fallback model also failed: {e2}")
+                print("Using simple rule-based model...")
+                self.simple_model = self._create_simple_model()
+                self.model_type = "simple_rule_based"
+        
+        self.is_initialized = True
+        print(f"Language model initialized: {self.model_type}")
+    
+    def _load_primary_model(self):
+        """Load the primary language model."""
+        print(f"Loading primary model: {LANGUAGE_MODEL}")
+        
+        if "dialo" in LANGUAGE_MODEL.lower():
+            # DialoGPT model
+            self.tokenizer = AutoTokenizer.from_pretrained(LANGUAGE_MODEL)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                LANGUAGE_MODEL,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto" if torch.cuda.is_available() else None
+            )
+            # Add padding token if missing
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-            logger.success("Tokenizer loaded successfully")
-            
-            # Step 2: Load model with lightweight config (timeout-prone operation)
-            logger.info("Loading model...")
-            start_time = time.time()
-            
+            self.model_type = "dialogpt"
+        else:
+            # Generic causal LM
+            self.tokenizer = AutoTokenizer.from_pretrained(LANGUAGE_MODEL)
             self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                torch_dtype=torch.float32,  # Use float32 for CPU
-                low_cpu_mem_usage=True,     # Optimize for CPU usage
-                device_map=None             # No device mapping for CPU
+                LANGUAGE_MODEL,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto" if torch.cuda.is_available() else None
             )
-            
-            self.model = self.model.to(self.device)
-            
-            load_time = time.time() - start_time
-            logger.success(f"Model loaded in {load_time:.2f} seconds")
-            
-            # Step 3: Create a simple text generation function instead of pipeline
-            logger.info("Setting up generation...")
-            self.is_model_loaded = True
-            
-            logger.success(f"Successfully loaded {self.model_name} (lightweight setup)")
-            
-        except Exception as e:
-            logger.error(f"Failed to load language model: {str(e)}")
-            logger.warning("Using fallback simple text generation")
-            self._setup_fallback()
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.model_type = "causal_lm"
     
-    def _setup_fallback(self):
-        """Setup a simple fallback text generation system."""
+    def _load_fallback_model(self):
+        """Load the fallback model (T5-small)."""
+        print(f"Loading fallback model: {FALLBACK_MODEL}")
+        
+        self.fallback_tokenizer = T5Tokenizer.from_pretrained(FALLBACK_MODEL)
+        self.fallback_model = T5ForConditionalGeneration.from_pretrained(
+            FALLBACK_MODEL,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto" if torch.cuda.is_available() else None
+        )
+        self.model_type = "t5_fallback"
+    
+    def generate_response(self, context: str, query: str, 
+                         retrieved_chunks: List[Dict[str, Any]],
+                         conversation_history: List[Dict[str, str]] = None) -> str:
+        """Generate a response based on context, query, and retrieved chunks."""
+        if not self.is_initialized:
+            self.initialize()
+        
+        # Use simple model if transformers not available
+        if self.model_type == "simple_rule_based":
+            return self.simple_model.generate_response(context, query, retrieved_chunks, conversation_history)
+        
+        # Prepare the prompt
+        prompt = self._create_prompt(context, query, retrieved_chunks, conversation_history)
+        
         try:
-            logger.info("Setting up simple fallback system...")
-            
-            # Create a simple template-based response system
-            self.is_model_loaded = True
-            self.model = None
-            self.tokenizer = None
-            
-            logger.success("Fallback system ready")
-            
+            if self.model_type == "t5_fallback":
+                return self._generate_t5_response(prompt)
+            else:
+                return self._generate_causal_response(prompt)
         except Exception as e:
-            logger.error(f"Failed to setup fallback: {str(e)}")
-            # Even if everything fails, mark as loaded so system can continue
-            self.is_model_loaded = True
-    
-    def generate_response(
-        self, 
-        prompt: str, 
-        max_length: int = 512,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        do_sample: bool = True
-    ) -> str:
-        """Generate a response using primarily the fallback system since GPT-2 is unreliable."""
-        
-        if not self.is_model_loaded:
-            self.load_model()
-        
-        # For now, prioritize the fallback system since GPT-2 gives poor results
-        logger.info("Using template-based response system for reliability")
-        return self._generate_fallback_response(prompt)
-        
-        # Keep the GPT-2 code commented out for potential future use
-        """
-        try:
-            # Try to use the actual model if loaded
-            if self.model is not None and self.tokenizer is not None:
-                logger.info("Generating response with language model...")
-                
-                # Shorten the prompt if it's too long for GPT-2
-                max_prompt_length = 300
-                if len(prompt) > max_prompt_length:
-                    # Keep the last part of the prompt which contains the actual question
-                    prompt_parts = prompt.split('\n')
-                    question_part = ""
-                    context_part = ""
-                    
-                    # Find the actual question
-                    for part in reversed(prompt_parts):
-                        if part.strip().startswith(('User Question:', 'Question:', 'Q:')):
-                            question_part = part.strip()
-                            break
-                    
-                    # Take some context
-                    context_parts = prompt.split('Context from research papers:')
-                    if len(context_parts) > 1:
-                        context_text = context_parts[1].split('User Question:')[0].strip()
-                        # Take first 150 characters of context
-                        context_part = context_text[:150] + "..." if len(context_text) > 150 else context_text
-                    
-                    # Create simplified prompt
-                    prompt = f"Based on research papers about transformers and NLP:\n{context_part}\n\n{question_part}\n\nAnswer:"
-                
-                # Tokenize input
-                inputs = self.tokenizer.encode(prompt, return_tensors="pt", truncate=True, max_length=400)
-                inputs = inputs.to(self.device)
-                
-                # Generate with conservative parameters
-                with torch.no_grad():
-                    outputs = self.model.generate(
-                        inputs,
-                        max_length=inputs.shape[1] + 100,  # Add 100 tokens to input
-                        temperature=0.8,
-                        do_sample=True,
-                        pad_token_id=self.tokenizer.eos_token_id,
-                        eos_token_id=self.tokenizer.eos_token_id,
-                        num_return_sequences=1,
-                        repetition_penalty=1.1,
-                        top_p=0.9
-                    )
-                
-                # Decode response
-                generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-                
-                # Extract only the new part (remove the input prompt)
-                input_text = self.tokenizer.decode(inputs[0], skip_special_tokens=True)
-                response = generated_text[len(input_text):].strip()
-                
-                logger.info(f"Generated text length: {len(generated_text)}")
-                logger.info(f"Input text length: {len(input_text)}")
-                logger.info(f"Extracted response: '{response[:100]}...'")
-                
-                if response and len(response) > 10:
-                    cleaned_response = self._clean_response(response)
-                    if len(cleaned_response) > 10:
-                        return cleaned_response
-                
-                logger.warning("Generated response too short or empty, using fallback")
+            print(f"Error generating response: {e}")
+            # Try fallback if primary model fails
+            if self.model_type != "t5_fallback" and hasattr(self, 'fallback_model') and self.fallback_model is not None:
+                try:
+                    return self._generate_t5_response(prompt)
+                except Exception as e2:
+                    print(f"Fallback model also failed: {e2}")
             
-            # Fallback to template-based response
-            return self._generate_fallback_response(prompt)
-                
-        except Exception as e:
-            logger.error(f"Error generating response: {str(e)}")
-            return self._generate_fallback_response(prompt)
-        """
+            # Final fallback to simple model
+            if not hasattr(self, 'simple_model') or self.simple_model is None:
+                self.simple_model = self._create_simple_model()
+            
+            return self.simple_model.generate_response(context, query, retrieved_chunks, conversation_history)
     
-    def _generate_fallback_response(self, prompt: str) -> str:
-        """Generate a detailed template-based response using retrieved context."""
+    def _create_prompt(self, context: str, query: str, 
+                      retrieved_chunks: List[Dict[str, Any]],
+                      conversation_history: List[Dict[str, str]] = None) -> str:
+        """Create a prompt for the language model."""
+        prompt_parts = []
         
-        # Extract the query and context from the prompt
-        query = prompt.lower()
-        context_text = ""
+        # Add conversation history if available
+        if conversation_history:
+            prompt_parts.append("Previous conversation:")
+            for entry in conversation_history[-4:]:  # Last 4 interactions
+                prompt_parts.append(f"Human: {entry.get('user', '')}")
+                prompt_parts.append(f"Assistant: {entry.get('assistant', '')}")
+            prompt_parts.append("")
         
-        # Try to extract context from the prompt
-        if "Context:" in prompt:
-            context_parts = prompt.split("Context:")
-            if len(context_parts) > 1:
-                context_section = context_parts[1].split("Question:")[0].strip()
-                context_text = context_section.lower()
-        
-        # Enhanced topic detection with context awareness
-        if "transformer" in query and "architecture" in query:
-            if "attention" in context_text or "encoder" in context_text or "decoder" in context_text:
-                return ("The Transformer architecture, as described in 'Attention Is All You Need', revolutionized NLP with its attention-based approach. "
-                       "It consists of an encoder-decoder structure where both components use multi-head self-attention layers. "
-                       "The key innovation is parallel processing of sequences rather than sequential processing like RNNs. "
-                       "Each layer contains multi-head attention, position-wise feed-forward networks, and residual connections with layer normalization. "
-                       "Positional encoding is added to input embeddings to provide sequence order information.")
-            else:
-                return ("The Transformer architecture uses attention mechanisms to process sequences in parallel, making it more efficient than RNN-based models. "
-                       "It consists of encoder and decoder stacks, each with multi-head self-attention and position-wise feed-forward layers. "
-                       "This architecture enables better modeling of long-range dependencies in sequences.")
-        
-        elif "attention" in query:
-            if "multi-head" in context_text or "self-attention" in context_text:
-                return ("Multi-head attention is a key component of the Transformer architecture. It allows the model to jointly attend to information "
-                       "from different representation subspaces at different positions. The attention mechanism computes a weighted sum of values "
-                       "based on query-key compatibility, enabling the model to focus on relevant parts of the input sequence. "
-                       "Self-attention relates different positions of a single sequence to compute a representation of the sequence.")
-            else:
-                return ("The attention mechanism allows models to focus on relevant parts of the input when processing each token. "
-                       "It computes attention weights between all pairs of positions in a sequence, enabling effective capture of long-range dependencies. "
-                       "This replaces the need for recurrent connections and allows parallel processing.")
-        
-        elif "bert" in query:
-            if "bidirectional" in context_text or "masked" in context_text:
-                return ("BERT (Bidirectional Encoder Representations from Transformers) pre-trains deep bidirectional representations "
-                       "by jointly conditioning on both left and right context. It uses masked language modeling, where random tokens "
-                       "are masked and the model learns to predict them using bidirectional context. BERT also uses next sentence prediction "
-                       "during pre-training to understand sentence relationships. This bidirectional training enables BERT to achieve "
-                       "state-of-the-art results on many NLP tasks through fine-tuning.")
-            else:
-                return ("BERT is designed to pre-train deep bidirectional representations by conditioning on both left and right context simultaneously. "
-                       "Unlike traditional language models that read text sequentially, BERT reads the entire sequence at once, "
-                       "enabling better context understanding for downstream tasks.")
-        
-        elif "gpt" in query and ("3" in query or "three" in query):
-            if "parameters" in context_text or "scaling" in context_text or "few-shot" in context_text:
-                return ("GPT-3 demonstrates that language models can perform many NLP tasks through in-context learning without task-specific fine-tuning. "
-                       "With 175 billion parameters, it shows that model performance scales predictably with model size, dataset size, and compute. "
-                       "GPT-3 can perform few-shot, one-shot, and zero-shot learning by providing examples or instructions in the input context. "
-                       "It was trained on diverse internet text and can generate human-like text for various applications including translation, "
-                       "question-answering, code generation, and creative writing.")
-            else:
-                return ("GPT-3 shows that large language models can perform various tasks through few-shot learning without requiring "
-                       "task-specific fine-tuning. It demonstrates emergent capabilities that arise from scale, with 175 billion parameters "
-                       "trained on diverse internet text.")
-        
-        elif "roberta" in query:
-            if "optimization" in context_text or "training" in context_text:
-                return ("RoBERTa optimizes BERT's training approach through several key improvements: removing the Next Sentence Prediction task "
-                       "which was found to hurt performance, using longer sequences and larger batch sizes, training on more data for longer, "
-                       "and using dynamic masking instead of static masking during pre-training. These optimizations lead to improved "
-                       "performance on downstream tasks compared to the original BERT model. RoBERTa shows that BERT was significantly undertrained.")
-            else:
-                return ("RoBERTa improves upon BERT by optimizing the training approach. It removes the Next Sentence Prediction task, "
-                       "uses longer sequences, larger batch sizes, and more training data. These changes lead to better performance "
-                       "than the original BERT model on various NLP benchmarks.")
-        
-        elif "t5" in query:
-            if "text-to-text" in context_text or "unified" in context_text:
-                return ("T5 (Text-to-Text Transfer Transformer) frames all NLP tasks as text-to-text problems, providing a unified approach "
-                       "to language tasks. Every task, whether classification, regression, or generation, is converted to generating target text "
-                       "given input text. This unified framework allows the same model architecture, training procedure, and hyperparameters "
-                       "to be used across diverse tasks. T5 was pre-trained on a cleaned version of Common Crawl called C4 using a span-corruption "
-                       "objective, and demonstrates strong performance across many NLP benchmarks.")
-            else:
-                return ("T5 frames all NLP tasks as text-to-text problems, using a unified approach where every task involves generating "
-                       "target text from input text. This allows the same model to handle diverse tasks like translation, summarization, "
-                       "and classification within a single framework.")
-        
-        elif any(word in query for word in ["compare", "difference", "versus", "vs", "comparison"]):
-            return ("These models represent different approaches to language understanding:\n\n"
-                   "• BERT: Focuses on bidirectional context understanding through masked language modeling, excellent for understanding tasks\n"
-                   "• GPT-3: Emphasizes autoregressive generation with massive scale, strong at few-shot learning and text generation\n"
-                   "• RoBERTa: Optimizes BERT's training methodology for better performance\n"
-                   "• T5: Unifies all NLP tasks as text-to-text problems, providing a consistent framework\n"
-                   "• Transformer: The foundational architecture underlying all these models, using attention mechanisms\n\n"
-                   "Each has specific innovations for their intended use cases, but all build on the Transformer architecture.")
-        
-        elif any(word in query for word in ["how", "work", "function", "mechanism"]):
-            return ("Modern NLP models work through several key mechanisms:\n\n"
-                   "1. **Tokenization**: Text is converted into numerical tokens that the model can process\n"
-                   "2. **Embeddings**: Tokens are mapped to dense vector representations\n"
-                   "3. **Attention**: The model learns to focus on relevant parts of the input when processing each token\n"
-                   "4. **Layers**: Multiple transformer layers build increasingly complex representations\n"
-                   "5. **Training**: Models learn from large amounts of text data to understand language patterns\n\n"
-                   "The key innovation is the attention mechanism, which allows parallel processing and better modeling of relationships between words.")
-        
-        elif any(word in query for word in ["what", "define", "definition", "explain"]):
-            if any(term in query for term in ["transformer", "bert", "gpt", "roberta", "t5"]):
-                return ("These are all transformer-based language models that have revolutionized NLP:\n\n"
-                       "• **Transformer**: The base architecture using attention mechanisms for parallel sequence processing\n"
-                       "• **BERT**: Bidirectional model for understanding tasks, uses masked language modeling\n"
-                       "• **GPT-3**: Large autoregressive model demonstrating few-shot learning capabilities\n"
-                       "• **RoBERTa**: Optimized version of BERT with improved training methodology\n"
-                       "• **T5**: Text-to-text framework that unifies all NLP tasks\n\n"
-                       "All use attention mechanisms to understand context and relationships in text.")
-            else:
-                return ("Based on the research papers, these models represent major advances in natural language processing through "
-                       "the use of attention mechanisms and transformer architectures. They can understand and generate human-like text "
-                       "for various applications.")
-        
-        else:
-            return ("Based on the research papers about Transformers, BERT, GPT-3, RoBERTa, and T5, I can help explain concepts related to:\n\n"
-                   "• **Transformer Architecture**: Attention mechanisms, encoder-decoder structure, parallel processing\n"
-                   "• **BERT**: Bidirectional training, masked language modeling, fine-tuning approaches\n"
-                   "• **GPT-3**: Large-scale language modeling, few-shot learning, emergent capabilities\n"
-                   "• **RoBERTa**: Training optimizations, performance improvements over BERT\n"
-                   "• **T5**: Text-to-text framework, unified task formulation\n\n"
-                   "What specific aspect would you like to know more about? You can ask about architectures, training methods, "
-                   "applications, or comparisons between these models.")
-    
-    def _clean_response(self, text: str) -> str:
-        """Clean and postprocess the generated response."""
-        
-        # Remove any repetitive patterns
-        text = re.sub(r'(.{10,}?)\1+', r'\1', text)
-        
-        # Remove incomplete sentences at the end
-        sentences = text.split('.')
-        if len(sentences) > 1 and len(sentences[-1].strip()) < 10:
-            text = '.'.join(sentences[:-1]) + '.'
-        
-        # Clean up whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        # Remove any artifacts
-        text = re.sub(r'<\|.*?\|>', '', text)
-        text = re.sub(r'\[.*?\]', '', text)
-        
-        return text
-
-
-class RAGResponseGenerator:
-    """RAG-specific response generator that combines retrieved context with language model."""
-    
-    def __init__(self, model_name: str = None):
-        self.llm = LanguageModelManager(model_name)
-        
-    def create_rag_prompt(
-        self, 
-        query: str, 
-        retrieved_chunks: List[Dict[str, Any]], 
-        conversation_history: List[Dict[str, str]] = None
-    ) -> str:
-        """Create a simplified prompt for RAG response generation suitable for GPT-2."""
-        
-        # Build context from retrieved chunks (use only the most relevant one for GPT-2)
+        # Add retrieved context
         if retrieved_chunks:
-            best_chunk = retrieved_chunks[0]
-            doc_name = best_chunk.get('document', 'Research Paper')
-            text = best_chunk.get('text', '')[:300]  # Limit context length
-            
-            # Clean up the text
-            text = text.replace('\n', ' ').strip()
-            if len(text) > 200:
-                text = text[:200] + "..."
-            
-            context = f"From {doc_name}: {text}"
-        else:
-            context = "Context: Research papers about transformer architectures and NLP models."
+            prompt_parts.append("Relevant information:")
+            for i, chunk in enumerate(retrieved_chunks[:3]):  # Top 3 chunks
+                source = chunk.get('source', 'unknown')
+                text = chunk.get('text', '')[:400]  # Limit chunk length
+                prompt_parts.append(f"[{source}] {text}")
+            prompt_parts.append("")
         
-        # Create a simple, concise prompt
-        prompt = f"""Context: {context}
-
-Question: {query}
-
-Answer:"""
+        # Add the current query
+        prompt_parts.append(f"Question: {query}")
+        prompt_parts.append("Answer:")
         
-        return prompt
+        return "\n".join(prompt_parts)
     
-    def generate_rag_response(
-        self, 
-        query: str, 
-        retrieved_chunks: List[Dict[str, Any]], 
-        conversation_history: List[Dict[str, str]] = None
-    ) -> Dict[str, Any]:
-        """Generate a RAG response given query and retrieved chunks."""
-        
-        # Create prompt
-        prompt = self.create_rag_prompt(query, retrieved_chunks, conversation_history)
-        
-        # Generate response
-        response = self.llm.generate_response(
-            prompt=prompt,
-            max_length=len(prompt.split()) + 200,  # Prompt length + 200 words
-            temperature=0.7,
-            top_p=0.9
+    def _generate_causal_response(self, prompt: str) -> str:
+        """Generate response using causal language model."""
+        # Tokenize input
+        inputs = self.tokenizer.encode(
+            prompt, 
+            return_tensors="pt", 
+            truncate=True, 
+            max_length=512
         )
         
-        return {
-            'response': response,
-            'sources': [
-                {
-                    'document': chunk.get('document'),
-                    'similarity_score': chunk.get('similarity_score'),
-                    'snippet': chunk.get('text', '')[:200] + '...' if len(chunk.get('text', '')) > 200 else chunk.get('text', '')
+        # Move to appropriate device
+        if torch.cuda.is_available():
+            inputs = inputs.cuda()
+            self.model = self.model.cuda()
+        
+        # Generate response
+        with torch.no_grad():
+            outputs = self.model.generate(
+                inputs,
+                max_new_tokens=MAX_TOKENS,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                pad_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+                no_repeat_ngram_size=3
+            )
+        
+        # Decode response
+        generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Extract only the new part (after the prompt)
+        response = generated_text[len(prompt):].strip()
+        
+        # Clean up response
+        response = self._clean_response(response)
+        
+        return response if response else "I need more information to provide a complete answer."
+    
+    def _generate_t5_response(self, prompt: str) -> str:
+        """Generate response using T5 model."""
+        # For T5, format as a question-answering task
+        t5_prompt = f"Answer the following question based on the context: {prompt}"
+        
+        # Tokenize
+        inputs = self.fallback_tokenizer.encode(
+            t5_prompt,
+            return_tensors="pt",
+            truncate=True,
+            max_length=512
+        )
+        
+        # Move to appropriate device
+        if torch.cuda.is_available():
+            inputs = inputs.cuda()
+            self.fallback_model = self.fallback_model.cuda()
+        
+        # Generate
+        with torch.no_grad():
+            outputs = self.fallback_model.generate(
+                inputs,
+                max_length=MAX_TOKENS,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                no_repeat_ngram_size=2
+            )
+        
+        # Decode
+        response = self.fallback_tokenizer.decode(outputs[0], skip_special_tokens=True)
+        response = self._clean_response(response)
+        
+        return response if response else "I need more information to provide a complete answer."
+    
+    def _clean_response(self, response: str) -> str:
+        """Clean and format the generated response."""
+        # Remove common artifacts
+        response = response.strip()
+        
+        # Remove repetitive phrases
+        lines = response.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            line = line.strip()
+            if line and line not in cleaned_lines[-3:]:  # Avoid immediate repetition
+                cleaned_lines.append(line)
+        
+        response = '\n'.join(cleaned_lines)
+        
+        # Limit length
+        if len(response) > 1000:
+            sentences = response.split('. ')
+            response = '. '.join(sentences[:3]) + '.'
+        
+        return response
+    
+    def _create_simple_model(self):
+        """Create a simple inline language model."""
+        class SimpleLanguageModel:
+            def __init__(self):
+                self.is_initialized = True
+                self.model_type = "simple_rule_based"
+            
+            def generate_response(self, context: str, query: str, 
+                                retrieved_chunks: List[Dict[str, Any]],
+                                conversation_history: List[Dict[str, str]] = None) -> str:
+                """Generate a simple response based on retrieved context."""
+                
+                # Extract key concepts from query
+                query_lower = query.lower()
+                
+                # Topic detection
+                topics = {
+                    'transformer': ['transformer', 'attention', 'self-attention'],
+                    'bert': ['bert', 'bidirectional', 'masked', 'pretraining'],
+                    'gpt': ['gpt', 'generative', 'autoregressive', 'few-shot'],
+                    'roberta': ['roberta', 'optimization', 'robust'],
+                    't5': ['t5', 'text-to-text', 'transfer', 'unified']
                 }
-                for chunk in retrieved_chunks[:3]
-            ],
-            'query': query,
-            'model_used': self.llm.model_name
-        }
-    
-    def load_model(self):
-        """Load the language model."""
-        self.llm.load_model()
-    
-    def is_loaded(self) -> bool:
-        """Check if the model is loaded."""
-        return self.llm.is_model_loaded
-
-
-class ConversationMemoryManager:
-    """Manages conversation memory for the last N interactions."""
-    
-    def __init__(self, memory_size: int = None):
-        self.memory_size = memory_size or settings.memory_size
-        self.conversation_history = []
-    
-    def add_interaction(self, user_message: str, assistant_response: str):
-        """Add a new interaction to the conversation memory."""
+                
+                detected_topics = []
+                for topic, keywords in topics.items():
+                    if any(keyword in query_lower for keyword in keywords):
+                        detected_topics.append(topic)
+                
+                # Build response from retrieved chunks
+                response_parts = []
+                
+                if retrieved_chunks:
+                    response_parts.append("Based on the research papers:")
+                    
+                    for i, chunk in enumerate(retrieved_chunks[:2]):  # Top 2 chunks
+                        source = chunk.get('source', 'unknown')
+                        text = chunk.get('text', '')[:200]  # First 200 chars
+                        
+                        # Clean text
+                        import re
+                        text = re.sub(r'\s+', ' ', text).strip()
+                        
+                        response_parts.append(f"\nFrom {source}: {text}")
+                
+                # Add topic-specific information
+                if 'transformer' in detected_topics:
+                    response_parts.append("\nThe Transformer architecture introduced the attention mechanism that allows models to focus on relevant parts of the input sequence.")
+                
+                if 'bert' in detected_topics:
+                    response_parts.append("\nBERT uses bidirectional training, which allows it to understand context from both directions in a sentence.")
+                
+                if 'gpt' in detected_topics:
+                    response_parts.append("\nGPT models are autoregressive and can perform few-shot learning by providing examples in the prompt.")
+                
+                # Fallback response
+                if not response_parts:
+                    response_parts = [
+                        "I can provide information about the research papers covering Transformer, BERT, GPT-3, RoBERTa, and T5.",
+                        "Please ask about specific aspects like architecture, training methods, or performance comparisons."
+                    ]
+                
+                return " ".join(response_parts)
+            
+            def get_model_info(self) -> Dict[str, Any]:
+                """Get model information."""
+                return {
+                    "primary_model": "simple_rule_based",
+                    "fallback_model": None,
+                    "current_model_type": "simple_rule_based",
+                    "is_initialized": True,
+                    "cuda_available": False,
+                    "max_tokens": 500
+                }
         
-        interaction = {
-            'user': user_message,
-            'assistant': assistant_response,
-            'timestamp': self._get_timestamp()
-        }
+        return SimpleLanguageModel()
+    
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get information about the loaded model."""
+        if self.model_type == "simple_rule_based":
+            return self.simple_model.get_model_info()
         
-        self.conversation_history.append(interaction)
-        
-        # Keep only the last N interactions
-        if len(self.conversation_history) > self.memory_size:
-            self.conversation_history = self.conversation_history[-self.memory_size:]
-    
-    def get_conversation_context(self) -> List[Dict[str, str]]:
-        """Get the current conversation context."""
-        return self.conversation_history.copy()
-    
-    def clear_memory(self):
-        """Clear the conversation memory."""
-        self.conversation_history = []
-    
-    def get_memory_summary(self) -> Dict[str, Any]:
-        """Get a summary of the current memory state."""
         return {
-            'total_interactions': len(self.conversation_history),
-            'memory_size_limit': self.memory_size,
-            'oldest_interaction': self.conversation_history[0]['timestamp'] if self.conversation_history else None,
-            'newest_interaction': self.conversation_history[-1]['timestamp'] if self.conversation_history else None
-        }
-    
-    def _get_timestamp(self) -> str:
-        """Get current timestamp."""
-        import datetime
-        return datetime.datetime.now().isoformat()
-    
-    def format_for_prompt(self) -> str:
-        """Format conversation history for inclusion in prompts."""
-        if not self.conversation_history:
-            return ""
-        
-        formatted_history = []
-        for interaction in self.conversation_history:
-            formatted_history.append(f"User: {interaction['user']}")
-            formatted_history.append(f"Assistant: {interaction['assistant']}")
-        
-        return "\n".join(formatted_history) 
+            "primary_model": LANGUAGE_MODEL,
+            "fallback_model": FALLBACK_MODEL,
+            "current_model_type": self.model_type,
+            "is_initialized": self.is_initialized,
+            "cuda_available": torch.cuda.is_available() if TRANSFORMERS_AVAILABLE else False,
+            "max_tokens": MAX_TOKENS
+        } 

@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -62,7 +62,7 @@ export const apiService = {
   },
 
   async getMemoryStatus() {
-    const response = await api.get("/memory/status");
+    const response = await api.get("/memory");
     return response.data;
   },
 

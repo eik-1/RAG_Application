@@ -118,6 +118,7 @@ const ChatInterface = () => {
   };
 
   const formatDocumentName = (docName) => {
+    if (!docName) return "Unknown Source";
     return docName.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
   };
 
@@ -270,14 +271,14 @@ const ChatInterface = () => {
                               >
                                 <div className="flex justify-between items-start mb-1">
                                   <span className="text-xs font-medium text-blue-700">
-                                    {formatDocumentName(source.document)}
+                                    {formatDocumentName(source.source)}
                                   </span>
                                   <span className="text-xs text-gray-500">
-                                    {source.similarity_score.toFixed(3)}
+                                    {source.similarity_score ? source.similarity_score.toFixed(3) : "N/A"}
                                   </span>
                                 </div>
                                 <p className="text-xs text-gray-600 leading-relaxed">
-                                  {source.snippet}
+                                  {source.text_preview || "No preview available"}
                                 </p>
                               </div>
                             ))}

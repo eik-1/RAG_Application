@@ -1,276 +1,231 @@
-import os
+"""Vector database using FAISS for semantic search."""
+
 import pickle
 import numpy as np
-import faiss
-from typing import List, Dict, Tuple, Any, Optional
-from pathlib import Path
-from sentence_transformers import SentenceTransformer
-from loguru import logger
-import json
+from typing import List, Dict, Any, Tuple
+from config import (
+    EMBEDDING_MODEL, VECTOR_DIM, TOP_K_RESULTS,
+    FAISS_INDEX_PATH, CHUNKS_METADATA_PATH
+)
 
-from config import settings
+# Try to import optional dependencies
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    print("⚠️  FAISS not available")
+    FAISS_AVAILABLE = False
+
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    print("⚠️  Sentence transformers not available, using simple text search")
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 
 class VectorDatabase:
-    """FAISS-based vector database for storing and retrieving document embeddings."""
+    """FAISS-based vector database for semantic search."""
     
-    def __init__(self, embedding_model_name: str = None):
-        self.embedding_model_name = embedding_model_name or settings.embedding_model
+    def __init__(self):
         self.embedding_model = None
         self.index = None
-        self.chunks_metadata = []
-        self.dimension = None
-        
-        # Paths for saving/loading
-        self.db_path = Path(settings.vector_db_path)
-        self.db_path.mkdir(parents=True, exist_ok=True)
-        
-        self.index_path = self.db_path / "faiss_index.index"
-        self.metadata_path = self.db_path / "chunks_metadata.pkl"
-        self.embeddings_path = self.db_path / "embeddings.npy"
-        
-    def load_embedding_model(self):
-        """Load the sentence transformer model for generating embeddings."""
-        try:
-            logger.info(f"Loading embedding model: {self.embedding_model_name}")
-            self.embedding_model = SentenceTransformer(self.embedding_model_name)
-            self.dimension = self.embedding_model.get_sentence_embedding_dimension()
-            logger.success(f"Loaded embedding model with dimension: {self.dimension}")
-        except Exception as e:
-            logger.error(f"Failed to load embedding model: {str(e)}")
-            raise
+        self.chunks = []
+        self.is_initialized = False
     
-    def generate_embeddings(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
+    def initialize(self):
+        """Initialize the embedding model and load existing index if available."""
+        print("Initializing vector database...")
+        
+        if not SENTENCE_TRANSFORMERS_AVAILABLE or not FAISS_AVAILABLE:
+            print("Using simple text search (no embeddings)")
+            self.chunks = []
+            self.is_initialized = True
+            return
+        
+        # Load embedding model
+        print(f"Loading embedding model: {EMBEDDING_MODEL}")
+        self.embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+        
+        # Try to load existing index and metadata
+        if FAISS_INDEX_PATH.exists() and CHUNKS_METADATA_PATH.exists():
+            self.load_index()
+        else:
+            # Create empty index
+            self.index = faiss.IndexFlatIP(VECTOR_DIM)  # Inner product for cosine similarity
+            self.chunks = []
+        
+        self.is_initialized = True
+        print("Vector database initialized")
+    
+    def create_embeddings(self, texts: List[str]) -> np.ndarray:
         """Generate embeddings for a list of texts."""
-        if self.embedding_model is None:
-            self.load_embedding_model()
+        if not self.is_initialized:
+            self.initialize()
         
-        logger.info(f"Generating embeddings for {len(texts)} texts")
-        
-        # Generate embeddings in batches to manage memory
-        all_embeddings = []
-        
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i + batch_size]
-            batch_embeddings = self.embedding_model.encode(
-                batch_texts, 
-                convert_to_numpy=True,
-                show_progress_bar=True if i == 0 else False
-            )
-            all_embeddings.append(batch_embeddings)
-        
-        embeddings = np.vstack(all_embeddings)
-        logger.success(f"Generated embeddings shape: {embeddings.shape}")
-        
-        return embeddings
+        print(f"Generating embeddings for {len(texts)} texts...")
+        embeddings = self.embedding_model.encode(
+            texts,
+            convert_to_numpy=True,
+            normalize_embeddings=True  # Normalize for cosine similarity
+        )
+        return embeddings.astype('float32')
     
-    def build_index(self, chunks_data: Dict[str, List[Dict[str, Any]]]):
-        """Build FAISS index from document chunks."""
+    def build_index(self, chunks: List[Dict[str, Any]]):
+        """Build FAISS index from chunks or store for simple search."""
+        if not self.is_initialized:
+            self.initialize()
         
-        # Flatten all chunks from all documents
-        all_chunks = []
-        for doc_name, chunks in chunks_data.items():
-            all_chunks.extend(chunks)
+        # Store chunks for simple search if embeddings not available
+        if not SENTENCE_TRANSFORMERS_AVAILABLE or not FAISS_AVAILABLE:
+            print(f"Storing {len(chunks)} chunks for simple text search...")
+            self.chunks = chunks
+            print("Simple text search ready")
+            return
         
-        if not all_chunks:
-            raise ValueError("No chunks provided for indexing")
+        print(f"Building FAISS index for {len(chunks)} chunks...")
         
-        # Extract texts for embedding
-        texts = [chunk['text'] for chunk in all_chunks]
+        # Extract texts
+        texts = [chunk['text'] for chunk in chunks]
         
         # Generate embeddings
-        embeddings = self.generate_embeddings(texts)
+        embeddings = self.create_embeddings(texts)
         
-        # Initialize FAISS index
-        if self.dimension is None:
-            self.dimension = embeddings.shape[1]
-        
-        # Use IndexFlatIP for cosine similarity (after normalization)
-        self.index = faiss.IndexFlatIP(self.dimension)
-        
-        # Normalize embeddings for cosine similarity
-        faiss.normalize_L2(embeddings)
+        # Create new index
+        self.index = faiss.IndexFlatIP(VECTOR_DIM)
         
         # Add embeddings to index
         self.index.add(embeddings)
         
-        # Store metadata
-        self.chunks_metadata = all_chunks
+        # Store chunk metadata
+        self.chunks = chunks
         
-        logger.success(f"Built FAISS index with {self.index.ntotal} vectors")
-        
-        # Save to disk
+        # Save index and metadata
         self.save_index()
         
-        return {
-            'total_chunks': len(all_chunks),
-            'embedding_dimension': self.dimension,
-            'index_size': self.index.ntotal
-        }
+        print(f"FAISS index built with {self.index.ntotal} vectors")
     
     def save_index(self):
-        """Save FAISS index and metadata to disk."""
-        try:
-            # Save FAISS index
-            faiss.write_index(self.index, str(self.index_path))
-            
-            # Save metadata
-            with open(self.metadata_path, 'wb') as f:
-                pickle.dump(self.chunks_metadata, f)
-            
-            logger.success(f"Saved vector database to {self.db_path}")
-            
-        except Exception as e:
-            logger.error(f"Failed to save vector database: {str(e)}")
-            raise
+        """Save FAISS index and chunk metadata to disk."""
+        # Save FAISS index
+        faiss.write_index(self.index, str(FAISS_INDEX_PATH))
+        
+        # Save chunk metadata
+        with open(CHUNKS_METADATA_PATH, 'wb') as f:
+            pickle.dump(self.chunks, f)
+        
+        print(f"Index saved to {FAISS_INDEX_PATH}")
+        print(f"Metadata saved to {CHUNKS_METADATA_PATH}")
     
-    def load_index(self) -> bool:
-        """Load FAISS index and metadata from disk."""
+    def load_index(self):
+        """Load FAISS index and chunk metadata from disk."""
         try:
-            if not self.index_path.exists() or not self.metadata_path.exists():
-                logger.warning("Vector database files not found")
-                return False
-            
-            # Load embedding model first
-            if self.embedding_model is None:
-                self.load_embedding_model()
-            
             # Load FAISS index
-            self.index = faiss.read_index(str(self.index_path))
+            self.index = faiss.read_index(str(FAISS_INDEX_PATH))
             
-            # Load metadata
-            with open(self.metadata_path, 'rb') as f:
-                self.chunks_metadata = pickle.load(f)
+            # Load chunk metadata
+            with open(CHUNKS_METADATA_PATH, 'rb') as f:
+                self.chunks = pickle.load(f)
             
-            logger.success(f"Loaded vector database with {self.index.ntotal} vectors")
-            return True
+            print(f"Loaded index with {self.index.ntotal} vectors")
+            print(f"Loaded {len(self.chunks)} chunk metadata")
             
         except Exception as e:
-            logger.error(f"Failed to load vector database: {str(e)}")
-            return False
+            print(f"Error loading index: {e}")
+            # Create empty index if loading fails
+            self.index = faiss.IndexFlatIP(VECTOR_DIM)
+            self.chunks = []
     
-    def search(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
-        """Search for similar chunks given a query."""
+    def search(self, query: str, k: int = TOP_K_RESULTS) -> List[Dict[str, Any]]:
+        """Search for similar chunks using semantic similarity or simple text search."""
+        if not self.is_initialized:
+            self.initialize()
         
-        if self.index is None:
-            if not self.load_index():
-                raise RuntimeError("Vector database not available. Please build the index first.")
+        # Use simple text search if embeddings not available
+        if not SENTENCE_TRANSFORMERS_AVAILABLE or not FAISS_AVAILABLE:
+            return self._simple_text_search(query, k)
         
-        if self.embedding_model is None:
-            self.load_embedding_model()
-        
-        top_k = top_k or settings.top_k_results
+        if self.index.ntotal == 0:
+            print("Warning: Vector database is empty")
+            return []
         
         # Generate query embedding
-        query_embedding = self.embedding_model.encode([query], convert_to_numpy=True)
+        query_embedding = self.create_embeddings([query])
         
-        # Normalize for cosine similarity
-        faiss.normalize_L2(query_embedding)
-        
-        # Search
-        scores, indices = self.index.search(query_embedding, top_k)
+        # Search for similar vectors
+        scores, indices = self.index.search(query_embedding, k)
         
         # Prepare results
         results = []
-        for score, idx in zip(scores[0], indices[0]):
-            if idx < len(self.chunks_metadata):
-                chunk = self.chunks_metadata[idx].copy()
-                chunk['similarity_score'] = float(score)
-                chunk['rank'] = len(results) + 1
-                results.append(chunk)
-        
-        logger.info(f"Retrieved {len(results)} results for query: '{query[:50]}...'")
+        for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
+            if idx < len(self.chunks):  # Valid index
+                result = self.chunks[idx].copy()
+                result['similarity_score'] = float(score)
+                result['rank'] = i + 1
+                results.append(result)
         
         return results
     
-    def get_database_stats(self) -> Dict[str, Any]:
-        """Get statistics about the vector database."""
+    def _simple_text_search(self, query: str, k: int = TOP_K_RESULTS) -> List[Dict[str, Any]]:
+        """Simple keyword-based text search fallback."""
+        if not self.chunks:
+            return []
         
-        if self.index is None:
-            if not self.load_index():
-                return {"status": "not_built"}
+        query_words = set(query.lower().split())
+        results = []
         
-        # Document distribution
-        doc_distribution = {}
-        for chunk in self.chunks_metadata:
-            doc_name = chunk.get('document', 'unknown')
-            doc_distribution[doc_name] = doc_distribution.get(doc_name, 0) + 1
+        for chunk in self.chunks:
+            text = chunk.get('text', '').lower()
+            chunk_words = set(text.split())
+            
+            # Calculate simple word overlap score
+            overlap = len(query_words.intersection(chunk_words))
+            if overlap > 0:
+                score = overlap / len(query_words)
+                result = chunk.copy()
+                result['similarity_score'] = score
+                results.append(result)
         
-        stats = {
-            'status': 'ready',
-            'total_vectors': self.index.ntotal,
-            'embedding_dimension': self.dimension,
-            'total_chunks': len(self.chunks_metadata),
-            'document_distribution': doc_distribution,
-            'embedding_model': self.embedding_model_name,
-            'index_type': type(self.index).__name__
+        # Sort by score and return top k
+        results.sort(key=lambda x: x['similarity_score'], reverse=True)
+        
+        # Add rank
+        for i, result in enumerate(results[:k]):
+            result['rank'] = i + 1
+        
+        return results[:k]
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get database statistics."""
+        if not self.is_initialized:
+            self.initialize()
+        
+        source_counts = {}
+        for chunk in self.chunks:
+            source = chunk.get('source', 'unknown')
+            source_counts[source] = source_counts.get(source, 0) + 1
+        
+        return {
+            "total_chunks": len(self.chunks),
+            "total_vectors": self.index.ntotal if self.index else 0,
+            "vector_dimension": VECTOR_DIM,
+            "embedding_model": EMBEDDING_MODEL,
+            "sources": source_counts,
+            "index_exists": FAISS_INDEX_PATH.exists(),
+            "metadata_exists": CHUNKS_METADATA_PATH.exists()
         }
-        
-        return stats
     
-    def rebuild_if_needed(self, chunks_data: Dict[str, List[Dict[str, Any]]]) -> bool:
-        """Rebuild index if it doesn't exist or is outdated."""
+    def rebuild_index(self, chunks: List[Dict[str, Any]]):
+        """Rebuild the entire index with new chunks."""
+        print("Rebuilding vector database index...")
         
-        if not self.index_path.exists():
-            logger.info("Index not found, building new index")
-            self.build_index(chunks_data)
-            return True
+        # Remove existing files
+        if FAISS_INDEX_PATH.exists():
+            FAISS_INDEX_PATH.unlink()
+        if CHUNKS_METADATA_PATH.exists():
+            CHUNKS_METADATA_PATH.unlink()
         
-        # Check if we have the same number of chunks
-        if self.load_index():
-            current_total = sum(len(chunks) for chunks in chunks_data.values())
-            if len(self.chunks_metadata) != current_total:
-                logger.info("Chunk count mismatch, rebuilding index")
-                self.build_index(chunks_data)
-                return True
-        else:
-            logger.info("Failed to load existing index, rebuilding")
-            self.build_index(chunks_data)
-            return True
+        # Build new index
+        self.build_index(chunks)
         
-        return False
-
-
-class EmbeddingManager:
-    """Manager for handling different embedding strategies and caching."""
-    
-    def __init__(self):
-        self.cache_dir = Path(settings.data_dir) / "embedding_cache"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-    
-    def get_cache_path(self, model_name: str, text_hash: str) -> Path:
-        """Get cache file path for a specific model and text hash."""
-        safe_model_name = model_name.replace('/', '_')
-        return self.cache_dir / f"{safe_model_name}_{text_hash}.npy"
-    
-    def compute_text_hash(self, texts: List[str]) -> str:
-        """Compute hash for a list of texts."""
-        import hashlib
-        combined_text = ''.join(texts)
-        return hashlib.md5(combined_text.encode()).hexdigest()
-    
-    def cache_embeddings(self, model_name: str, texts: List[str], embeddings: np.ndarray):
-        """Cache embeddings for future use."""
-        text_hash = self.compute_text_hash(texts)
-        cache_path = self.get_cache_path(model_name, text_hash)
-        
-        try:
-            np.save(cache_path, embeddings)
-            logger.info(f"Cached embeddings to {cache_path}")
-        except Exception as e:
-            logger.warning(f"Failed to cache embeddings: {str(e)}")
-    
-    def load_cached_embeddings(self, model_name: str, texts: List[str]) -> Optional[np.ndarray]:
-        """Load cached embeddings if available."""
-        text_hash = self.compute_text_hash(texts)
-        cache_path = self.get_cache_path(model_name, text_hash)
-        
-        if cache_path.exists():
-            try:
-                embeddings = np.load(cache_path)
-                logger.info(f"Loaded cached embeddings from {cache_path}")
-                return embeddings
-            except Exception as e:
-                logger.warning(f"Failed to load cached embeddings: {str(e)}")
-        
-        return None 
+        print("Index rebuild completed") 

@@ -1,272 +1,260 @@
-import asyncio
-from typing import Dict, List, Any, Optional
-from loguru import logger
-import json
-from pathlib import Path
-import time
+"""Main RAG system that integrates all components."""
 
-from config import settings
-from app.pdf_ingestion import PDFIngestionPipeline
-from app.vector_database import VectorDatabase
-from app.language_model import RAGResponseGenerator, ConversationMemoryManager
+from typing import List, Dict, Any, Optional
+from collections import deque
+import time
+import json
+
+from .pdf_ingestion import PDFIngestion
+from .vector_database import VectorDatabase
+from .language_model import LanguageModel
+from config import CONVERSATION_MEMORY_SIZE
 
 
 class RAGSystem:
-    """Main RAG system that orchestrates all components."""
+    """Complete RAG system with conversational memory."""
     
     def __init__(self):
-        self.pdf_pipeline = PDFIngestionPipeline()
+        self.pdf_ingestion = PDFIngestion()
         self.vector_db = VectorDatabase()
-        self.response_generator = RAGResponseGenerator()
-        self.memory_manager = ConversationMemoryManager()
+        self.language_model = LanguageModel()
+        
+        # Conversation memory (last 4 interactions)
+        self.conversation_memory = deque(maxlen=CONVERSATION_MEMORY_SIZE)
         
         self.is_initialized = False
-        self.initialization_stats = {}
+        self.initialization_status = {
+            "pdf_processing": False,
+            "vector_db": False,
+            "language_model": False
+        }
     
-    async def initialize(self, force_rebuild: bool = False) -> Dict[str, Any]:
-        """Initialize the RAG system by processing PDFs and building the vector database."""
-        
-        if self.is_initialized and not force_rebuild:
-            logger.info("RAG system already initialized")
-            return self.initialization_stats
-        
-        logger.info("Initializing RAG system...")
+    def initialize(self, force_rebuild: bool = False) -> Dict[str, Any]:
+        """Initialize the complete RAG system."""
+        print("🚀 Initializing RAG System...")
+        start_time = time.time()
         
         try:
             # Step 1: Process PDFs
-            logger.info("Step 1: Processing PDF documents")
-            document_chunks = await self.pdf_pipeline.process_all_pdfs()
-            
-            if not document_chunks:
-                raise RuntimeError("No documents were successfully processed")
-            
-            # Step 2: Build/rebuild vector database
-            logger.info("Step 2: Building vector database")
-            if force_rebuild or self.vector_db.rebuild_if_needed(document_chunks):
-                vector_stats = self.vector_db.build_index(document_chunks)
+            print("📄 Processing PDFs...")
+            if force_rebuild or not self._check_existing_data():
+                chunks = self.pdf_ingestion.process_all_pdfs()
+                if not chunks:
+                    raise Exception("No chunks were processed from PDFs")
             else:
-                vector_stats = self.vector_db.get_database_stats()
+                print("Using existing PDF chunks...")
+                chunks = self._load_existing_chunks()
             
-            # Step 3: Load language model
-            logger.info("Step 3: Loading language model")
-            start_time = time.time()
-            self.response_generator.load_model()
-            load_time = time.time() - start_time
-            logger.success(f"Language model loaded in {load_time:.2f} seconds")
+            self.initialization_status["pdf_processing"] = True
             
-            # Generate initialization statistics
-            logger.info("Step 4: Generating initialization statistics")
-            pdf_stats = self.pdf_pipeline.get_processing_stats(document_chunks)
+            # Step 2: Initialize vector database
+            print("🔍 Initializing vector database...")
+            self.vector_db.initialize()
             
-            self.initialization_stats = {
-                'status': 'initialized',
-                'pdf_processing': pdf_stats,
-                'vector_database': vector_stats,
-                'language_model': {
-                    'model_name': self.response_generator.llm.model_name,
-                    'device': self.response_generator.llm.device,
-                    'loaded': self.response_generator.is_loaded()
-                },
-                'memory_manager': self.memory_manager.get_memory_summary()
-            }
+            # Build index if needed
+            if force_rebuild or self.vector_db.index.ntotal == 0:
+                self.vector_db.build_index(chunks)
+            
+            self.initialization_status["vector_db"] = True
+            
+            # Step 3: Initialize language model
+            print("🤖 Initializing language model...")
+            self.language_model.initialize()
+            self.initialization_status["language_model"] = True
             
             self.is_initialized = True
-            logger.success("RAG system initialization completed successfully")
+            initialization_time = time.time() - start_time
             
-            # Log final stats
-            logger.info("=== INITIALIZATION COMPLETE ===")
-            logger.info(f"✅ Total documents processed: {self.initialization_stats['pdf_processing']['total_documents']}")
-            logger.info(f"✅ Total chunks created: {self.initialization_stats['pdf_processing']['total_chunks']}")
-            logger.info(f"✅ Vector database size: {self.initialization_stats['vector_database']['index_size']}")
-            logger.info(f"✅ Language model: {self.initialization_stats['language_model']['model_name']}")
-            logger.info(f"✅ Model loaded: {self.initialization_stats['language_model']['loaded']}")
-            logger.info("🚀 RAG Application is ready for queries!")
+            print(f"✅ RAG System initialized successfully in {initialization_time:.2f} seconds")
             
-            return self.initialization_stats
+            return {
+                "success": True,
+                "initialization_time": initialization_time,
+                "status": self.initialization_status,
+                "stats": self.get_system_stats()
+            }
             
         except Exception as e:
-            logger.error(f"Failed to initialize RAG system: {str(e)}")
-            self.initialization_stats = {
-                'status': 'failed',
-                'error': str(e)
+            print(f"❌ RAG System initialization failed: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "status": self.initialization_status
             }
-            raise
     
-    async def query(
-        self, 
-        user_question: str, 
-        top_k: int = None, 
-        include_sources: bool = True
-    ) -> Dict[str, Any]:
-        """Process a user query and return a RAG response."""
-        
+    def chat(self, user_message: str) -> Dict[str, Any]:
+        """Process a user message and return a response with memory."""
         if not self.is_initialized:
-            await self.initialize()
+            return {
+                "success": False,
+                "error": "System not initialized. Please initialize first.",
+                "response": "I'm not ready yet. Please wait for system initialization.",
+                "sources": []
+            }
+        
+        start_time = time.time()
         
         try:
-            logger.info(f"Processing query: '{user_question[:100]}...'")
-            
-            # Step 1: Retrieve relevant chunks
-            retrieved_chunks = self.vector_db.search(
-                query=user_question, 
-                top_k=top_k or settings.top_k_results
-            )
+            # Step 1: Search for relevant chunks
+            print(f"🔍 Searching for: {user_message}")
+            retrieved_chunks = self.vector_db.search(user_message)
             
             if not retrieved_chunks:
-                return {
-                    'response': "I apologize, but I couldn't find any relevant information in the documents to answer your question.",
-                    'sources': [],
-                    'query': user_question,
-                    'retrieval_stats': {
-                        'chunks_found': 0,
-                        'top_score': 0
-                    }
-                }
+                response = "I couldn't find relevant information to answer your question. Could you try rephrasing or asking about the research papers I have access to?"
+                sources = []
+            else:
+                # Step 2: Generate response with context and memory
+                print("🤖 Generating response...")
+                context = self._prepare_context(retrieved_chunks)
+                
+                response = self.language_model.generate_response(
+                    context=context,
+                    query=user_message,
+                    retrieved_chunks=retrieved_chunks,
+                    conversation_history=list(self.conversation_memory)
+                )
+                
+                sources = self._prepare_sources(retrieved_chunks)
             
-            # Step 2: Get conversation context
-            conversation_history = self.memory_manager.get_conversation_context()
+            # Step 3: Update conversation memory
+            self._update_memory(user_message, response)
             
-            # Step 3: Generate response
-            rag_response = self.response_generator.generate_rag_response(
-                query=user_question,
-                retrieved_chunks=retrieved_chunks,
-                conversation_history=conversation_history
-            )
+            processing_time = time.time() - start_time
             
-            # Step 4: Update conversation memory
-            self.memory_manager.add_interaction(
-                user_message=user_question,
-                assistant_response=rag_response['response']
-            )
-            
-            # Enhance response with additional metadata
-            enhanced_response = {
-                **rag_response,
-                'retrieval_stats': {
-                    'chunks_found': len(retrieved_chunks),
-                    'top_score': retrieved_chunks[0]['similarity_score'] if retrieved_chunks else 0,
-                    'documents_referenced': list(set(chunk['document'] for chunk in retrieved_chunks))
-                },
-                'memory_context': len(conversation_history) > 0
+            return {
+                "success": True,
+                "response": response,
+                "sources": sources,
+                "processing_time": processing_time,
+                "retrieved_chunks": len(retrieved_chunks),
+                "memory_size": len(self.conversation_memory)
             }
-            
-            if not include_sources:
-                enhanced_response.pop('sources', None)
-            
-            logger.success(f"Generated response for query (score: {enhanced_response['retrieval_stats']['top_score']:.3f})")
-            
-            return enhanced_response
             
         except Exception as e:
-            logger.error(f"Failed to process query: {str(e)}")
+            print(f"Error in chat: {e}")
             return {
-                'response': "I encountered an error while processing your question. Please try again.",
-                'sources': [],
-                'query': user_question,
-                'error': str(e)
+                "success": False,
+                "error": str(e),
+                "response": "I encountered an error while processing your request. Please try again.",
+                "sources": []
             }
     
-    def get_system_status(self) -> Dict[str, Any]:
-        """Get the current status of all system components."""
-        
-        status = {
-            'system_initialized': self.is_initialized,
-            'components': {
-                'pdf_pipeline': {
-                    'status': 'ready'
-                },
-                'vector_database': self.vector_db.get_database_stats(),
-                'language_model': {
-                    'loaded': self.response_generator.is_loaded(),
-                    'model_name': self.response_generator.llm.model_name if hasattr(self.response_generator.llm, 'model_name') else 'not_loaded'
-                },
-                'memory_manager': self.memory_manager.get_memory_summary()
-            }
-        }
-        
-        if self.is_initialized:
-            status['initialization_stats'] = self.initialization_stats
-        
-        return status
+    def _check_existing_data(self) -> bool:
+        """Check if processed data already exists."""
+        return (
+            self.pdf_ingestion.chunks_dir.exists() and
+            any(self.pdf_ingestion.chunks_dir.glob("*_chunks.json"))
+        )
     
-    def clear_conversation_memory(self):
-        """Clear the conversation memory."""
-        self.memory_manager.clear_memory()
-        logger.info("Conversation memory cleared")
-    
-    async def get_similar_documents(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
-        """Get similar document chunks without generating a response."""
+    def _load_existing_chunks(self) -> List[Dict[str, Any]]:
+        """Load existing chunks from disk."""
+        all_chunks = []
         
-        if not self.is_initialized:
-            await self.initialize()
-        
-        return self.vector_db.search(query=query, top_k=top_k)
-    
-    def get_document_statistics(self) -> Dict[str, Any]:
-        """Get statistics about the processed documents."""
-        
-        if not self.is_initialized:
-            return {'error': 'System not initialized'}
-        
-        # Load chunks from saved files to get detailed stats
-        stats = {
-            'documents': {},
-            'total_chunks': 0,
-            'total_characters': 0
-        }
-        
-        chunks_dir = Path(settings.chunks_dir)
-        for chunk_file in chunks_dir.glob("*_chunks.json"):
+        for chunks_file in self.pdf_ingestion.chunks_dir.glob("*_chunks.json"):
             try:
-                with open(chunk_file, 'r', encoding='utf-8') as f:
+                with open(chunks_file, 'r', encoding='utf-8') as f:
                     chunks = json.load(f)
-                
-                doc_name = chunk_file.stem.replace('_chunks', '')
-                doc_stats = {
-                    'chunks': len(chunks),
-                    'total_characters': sum(chunk['size'] for chunk in chunks),
-                    'avg_chunk_size': sum(chunk['size'] for chunk in chunks) / len(chunks) if chunks else 0
-                }
-                
-                stats['documents'][doc_name] = doc_stats
-                stats['total_chunks'] += doc_stats['chunks']
-                stats['total_characters'] += doc_stats['total_characters']
-                
+                    all_chunks.extend(chunks)
             except Exception as e:
-                logger.warning(f"Failed to load stats for {chunk_file}: {str(e)}")
+                print(f"Error loading {chunks_file}: {e}")
         
-        if stats['total_chunks'] > 0:
-            stats['avg_chunk_size'] = stats['total_characters'] / stats['total_chunks']
+        return all_chunks
+    
+    def _prepare_context(self, retrieved_chunks: List[Dict[str, Any]]) -> str:
+        """Prepare context from retrieved chunks."""
+        context_parts = []
+        
+        for chunk in retrieved_chunks[:3]:  # Top 3 most relevant
+            source = chunk.get('source', 'unknown')
+            text = chunk.get('text', '')[:300]  # Limit text length
+            context_parts.append(f"From {source}: {text}")
+        
+        return "\n\n".join(context_parts)
+    
+    def _prepare_sources(self, retrieved_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Prepare source information for response."""
+        sources = []
+        
+        for chunk in retrieved_chunks:
+            sources.append({
+                "source": chunk.get('source', 'unknown'),
+                "chunk_id": chunk.get('id', ''),
+                "similarity_score": chunk.get('similarity_score', 0.0),
+                "text_preview": chunk.get('text', '')[:200] + "..."
+            })
+        
+        return sources
+    
+    def _update_memory(self, user_message: str, assistant_response: str):
+        """Update conversation memory with new interaction."""
+        interaction = {
+            "user": user_message,
+            "assistant": assistant_response,
+            "timestamp": time.time()
+        }
+        
+        self.conversation_memory.append(interaction)
+        print(f"💭 Memory updated. Current size: {len(self.conversation_memory)}")
+    
+    def clear_memory(self):
+        """Clear conversation memory."""
+        self.conversation_memory.clear()
+        print("💭 Conversation memory cleared")
+    
+    def get_memory(self) -> List[Dict[str, Any]]:
+        """Get current conversation memory."""
+        return list(self.conversation_memory)
+    
+    def get_system_stats(self) -> Dict[str, Any]:
+        """Get comprehensive system statistics."""
+        stats = {
+            "is_initialized": self.is_initialized,
+            "initialization_status": self.initialization_status,
+            "memory_size": len(self.conversation_memory),
+            "max_memory_size": CONVERSATION_MEMORY_SIZE
+        }
+        
+        # Add vector database stats
+        if self.vector_db.is_initialized:
+            stats.update(self.vector_db.get_stats())
+        
+        # Add language model info
+        if self.language_model.is_initialized:
+            stats["language_model"] = self.language_model.get_model_info()
         
         return stats
-
-
-class RAGSystemManager:
-    """Singleton manager for the RAG system."""
     
-    _instance = None
-    _rag_system = None
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get system health status."""
+        health = {
+            "status": "healthy" if self.is_initialized else "initializing",
+            "components": {
+                "pdf_ingestion": "ready" if self.initialization_status["pdf_processing"] else "not_ready",
+                "vector_database": "ready" if self.initialization_status["vector_db"] else "not_ready",
+                "language_model": "ready" if self.initialization_status["language_model"] else "not_ready"
+            },
+            "memory": {
+                "current_size": len(self.conversation_memory),
+                "max_size": CONVERSATION_MEMORY_SIZE
+            }
+        }
+        
+        return health
     
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(RAGSystemManager, cls).__new__(cls)
-        return cls._instance
-    
-    def get_rag_system(self) -> RAGSystem:
-        """Get the RAG system instance."""
-        if self._rag_system is None:
-            self._rag_system = RAGSystem()
-        return self._rag_system
-    
-    async def initialize_system(self, force_rebuild: bool = False) -> Dict[str, Any]:
-        """Initialize the RAG system."""
-        rag_system = self.get_rag_system()
-        return await rag_system.initialize(force_rebuild=force_rebuild)
-    
-    def reset_system(self):
-        """Reset the RAG system (for testing or reinitialization)."""
-        self._rag_system = None
-
-
-# Global instance
-rag_manager = RAGSystemManager() 
+    def rebuild_system(self) -> Dict[str, Any]:
+        """Rebuild the entire system from scratch."""
+        print("🔄 Rebuilding RAG system...")
+        
+        # Clear memory
+        self.clear_memory()
+        
+        # Reset initialization status
+        self.is_initialized = False
+        self.initialization_status = {
+            "pdf_processing": False,
+            "vector_db": False,
+            "language_model": False
+        }
+        
+        # Reinitialize with force rebuild
+        return self.initialize(force_rebuild=True) 

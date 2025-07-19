@@ -1,481 +1,346 @@
+"""Evaluation framework for the RAG system."""
+
 import json
-import asyncio
 import time
-from typing import Dict, List, Any, Tuple
+from typing import List, Dict, Any
 from pathlib import Path
-from datetime import datetime
-import pandas as pd
-from loguru import logger
-
-# Import RAGAS for evaluation (if available)
-try:
-    from ragas import evaluate
-    from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
-    HAS_RAGAS = True
-except ImportError:
-    logger.warning("RAGAS not available, using custom evaluation metrics")
-    HAS_RAGAS = False
-
-# For text similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import re
 import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
-from nltk.stem import PorterStemmer
+from rouge_score import rouge_scorer
+import re
 
-from app.rag_system import rag_manager
-from config import settings
+from config import TEST_QUESTIONS_FILE, EVALUATION_RESULTS_FILE
 
 
-class CustomEvaluationMetrics:
-    """Custom evaluation metrics for RAG responses."""
+class EvaluationFramework:
+    """Comprehensive evaluation framework for RAG system."""
     
-    def __init__(self):
-        self.stemmer = PorterStemmer()
+    def __init__(self, rag_system):
+        self.rag_system = rag_system
+        self.rouge_scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
+        
+        # Download NLTK data if needed
         try:
+            nltk.data.find('tokenizers/punkt')
+        except LookupError:
+            print("Downloading NLTK punkt tokenizer...")
             nltk.download('punkt', quiet=True)
-            nltk.download('stopwords', quiet=True)
-            self.stop_words = set(stopwords.words('english'))
-        except:
-            self.stop_words = set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'])
-    
-    def preprocess_text(self, text: str) -> str:
-        """Preprocess text for evaluation."""
-        # Convert to lowercase
-        text = text.lower()
-        
-        # Remove special characters and extra whitespace
-        text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
-        text = re.sub(r'\s+', ' ', text)
-        
-        # Tokenize and remove stopwords
-        try:
-            words = word_tokenize(text)
-        except:
-            words = text.split()
-        
-        words = [self.stemmer.stem(word) for word in words if word not in self.stop_words]
-        
-        return ' '.join(words)
-    
-    def relevance_score(self, question: str, answer: str, sources: List[Dict[str, Any]]) -> float:
-        """Calculate relevance of answer to question."""
-        
-        # Preprocess texts
-        q_processed = self.preprocess_text(question)
-        a_processed = self.preprocess_text(answer)
-        
-        # Calculate TF-IDF similarity
-        vectorizer = TfidfVectorizer()
-        try:
-            tfidf_matrix = vectorizer.fit_transform([q_processed, a_processed])
-            similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
-        except:
-            # Fallback to simple word overlap
-            q_words = set(q_processed.split())
-            a_words = set(a_processed.split())
-            if len(q_words) == 0 or len(a_words) == 0:
-                return 0.0
-            similarity = len(q_words.intersection(a_words)) / len(q_words.union(a_words))
-        
-        # Boost score if sources are highly relevant
-        if sources:
-            avg_source_score = sum(source.get('similarity_score', 0) for source in sources) / len(sources)
-            similarity = (similarity + avg_source_score) / 2
-        
-        return min(similarity, 1.0)
-    
-    def accuracy_score(self, answer: str, expected_topics: List[str]) -> float:
-        """Calculate accuracy based on presence of expected topics."""
-        
-        answer_processed = self.preprocess_text(answer)
-        
-        topic_mentions = 0
-        for topic in expected_topics:
-            topic_processed = self.preprocess_text(topic)
-            
-            # Check for exact matches or partial matches
-            if topic_processed in answer_processed:
-                topic_mentions += 1
-            else:
-                # Check for partial matches (individual words)
-                topic_words = topic_processed.split()
-                if any(word in answer_processed for word in topic_words if len(word) > 3):
-                    topic_mentions += 0.5
-        
-        return min(topic_mentions / len(expected_topics) if expected_topics else 0, 1.0)
-    
-    def coherence_score(self, answer: str) -> float:
-        """Calculate coherence of the answer."""
-        
-        if not answer or len(answer.strip()) < 10:
-            return 0.0
-        
-        sentences = answer.split('.')
-        valid_sentences = [s.strip() for s in sentences if len(s.strip()) > 5]
-        
-        if len(valid_sentences) < 2:
-            return 0.5  # Short but potentially coherent
-        
-        # Simple coherence checks
-        score = 1.0
-        
-        # Check for repetition
-        if len(set(valid_sentences)) / len(valid_sentences) < 0.7:
-            score -= 0.2
-        
-        # Check for very short sentences (might indicate fragmentation)
-        avg_sentence_length = sum(len(s.split()) for s in valid_sentences) / len(valid_sentences)
-        if avg_sentence_length < 5:
-            score -= 0.2
-        
-        # Check for very long sentences (might indicate run-on)
-        if any(len(s.split()) > 50 for s in valid_sentences):
-            score -= 0.1
-        
-        return max(score, 0.0)
-    
-    def faithfulness_score(self, answer: str, sources: List[Dict[str, Any]]) -> float:
-        """Calculate faithfulness of answer to sources."""
-        
-        if not sources:
-            return 0.5  # Neutral if no sources
-        
-        answer_processed = self.preprocess_text(answer)
-        source_texts = [self.preprocess_text(source.get('snippet', '')) for source in sources]
-        
-        if not answer_processed or not any(source_texts):
-            return 0.0
-        
-        # Calculate overlap with sources
-        answer_words = set(answer_processed.split())
-        source_words = set()
-        for source_text in source_texts:
-            source_words.update(source_text.split())
-        
-        if not answer_words or not source_words:
-            return 0.0
-        
-        overlap = len(answer_words.intersection(source_words))
-        faithfulness = overlap / len(answer_words)
-        
-        return min(faithfulness, 1.0)
-
-
-class RAGEvaluationFramework:
-    """Comprehensive evaluation framework for RAG systems."""
-    
-    def __init__(self):
-        self.metrics = CustomEvaluationMetrics()
-        self.test_questions_file = Path(settings.test_questions_file)
-        self.results_dir = Path(settings.evaluation_output_dir)
-        self.results_dir.mkdir(parents=True, exist_ok=True)
     
     def load_test_questions(self) -> List[Dict[str, Any]]:
         """Load test questions from JSON file."""
+        if not TEST_QUESTIONS_FILE.exists():
+            raise FileNotFoundError(f"Test questions file not found: {TEST_QUESTIONS_FILE}")
         
-        if not self.test_questions_file.exists():
-            raise FileNotFoundError(f"Test questions file not found: {self.test_questions_file}")
-        
-        with open(self.test_questions_file, 'r', encoding='utf-8') as f:
-            questions = json.load(f)
-        
-        logger.info(f"Loaded {len(questions)} test questions")
-        return questions
+        with open(TEST_QUESTIONS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
     
-    async def evaluate_single_question(
-        self, 
-        question_data: Dict[str, Any],
-        rag_system,
-        context_questions: List[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """Evaluate a single question."""
+    def evaluate_single_response(self, question: str, response: str, 
+                               sources: List[Dict[str, Any]], 
+                               expected_sources: List[str] = None) -> Dict[str, Any]:
+        """Evaluate a single response using multiple metrics."""
         
-        question = question_data['question']
-        expected_topics = question_data.get('expected_topics', [])
-        needs_context = question_data.get('context_memory', False)
+        # 1. Relevance Score (based on keyword matching)
+        relevance_score = self._calculate_relevance(question, response)
         
-        logger.info(f"Evaluating question {question_data['id']}: {question[:50]}...")
+        # 2. Coherence Score (based on sentence structure and flow)
+        coherence_score = self._calculate_coherence(response)
         
-        # If this question needs context, ask context questions first
-        if needs_context and context_questions:
-            for ctx_q in context_questions:
-                await rag_system.query(ctx_q['question'])
-                await asyncio.sleep(0.5)  # Small delay
+        # 3. Faithfulness Score (response should be grounded in sources)
+        faithfulness_score = self._calculate_faithfulness(response, sources)
         
-        # Measure response time
-        start_time = time.time()
+        # 4. Source Coverage (checking if expected sources are retrieved)
+        source_coverage = self._calculate_source_coverage(sources, expected_sources)
         
-        try:
-            # Get RAG response
-            response = await rag_system.query(question)
-            response_time = time.time() - start_time
-            
-            answer = response.get('response', '')
-            sources = response.get('sources', [])
-            retrieval_stats = response.get('retrieval_stats', {})
-            
-            # Calculate metrics
-            relevance = self.metrics.relevance_score(question, answer, sources)
-            accuracy = self.metrics.accuracy_score(answer, expected_topics)
-            coherence = self.metrics.coherence_score(answer)
-            faithfulness = self.metrics.faithfulness_score(answer, sources)
-            
-            # Overall score (weighted average)
-            overall_score = (
-                relevance * 0.3 +
-                accuracy * 0.3 +
-                coherence * 0.2 +
-                faithfulness * 0.2
-            )
-            
-            result = {
-                'question_id': question_data['id'],
-                'question': question,
-                'category': question_data.get('category', 'Unknown'),
-                'difficulty': question_data.get('difficulty', 'Unknown'),
-                'answer': answer,
-                'response_time': response_time,
-                'sources_count': len(sources),
-                'top_similarity_score': retrieval_stats.get('top_score', 0),
-                'chunks_retrieved': retrieval_stats.get('chunks_found', 0),
-                'metrics': {
-                    'relevance': relevance,
-                    'accuracy': accuracy,
-                    'coherence': coherence,
-                    'faithfulness': faithfulness,
-                    'overall_score': overall_score
-                },
-                'sources': sources[:3],  # Keep top 3 sources for analysis
-                'expected_topics': expected_topics,
-                'topics_found': self._analyze_topics_coverage(answer, expected_topics)
-            }
-            
-            logger.success(f"Question {question_data['id']} evaluated - Score: {overall_score:.3f}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Failed to evaluate question {question_data['id']}: {str(e)}")
-            return {
-                'question_id': question_data['id'],
-                'question': question,
-                'error': str(e),
-                'metrics': {
-                    'relevance': 0,
-                    'accuracy': 0,
-                    'coherence': 0,
-                    'faithfulness': 0,
-                    'overall_score': 0
-                }
-            }
+        # 5. Response Quality (length, completeness, clarity)
+        quality_score = self._calculate_quality(response)
+        
+        # 6. Overall Score (weighted average)
+        overall_score = (
+            relevance_score * 0.25 +
+            coherence_score * 0.20 +
+            faithfulness_score * 0.25 +
+            source_coverage * 0.15 +
+            quality_score * 0.15
+        )
+        
+        return {
+            "relevance_score": relevance_score,
+            "coherence_score": coherence_score,
+            "faithfulness_score": faithfulness_score,
+            "source_coverage": source_coverage,
+            "quality_score": quality_score,
+            "overall_score": overall_score,
+            "response_length": len(response),
+            "num_sources": len(sources)
+        }
     
-    def _analyze_topics_coverage(self, answer: str, expected_topics: List[str]) -> List[str]:
-        """Analyze which expected topics are covered in the answer."""
+    def _calculate_relevance(self, question: str, response: str) -> float:
+        """Calculate relevance between question and response."""
+        question_words = set(re.findall(r'\w+', question.lower()))
+        response_words = set(re.findall(r'\w+', response.lower()))
         
-        answer_lower = answer.lower()
-        found_topics = []
+        # Remove common stop words
+        stop_words = {'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should'}
+        question_words -= stop_words
+        response_words -= stop_words
         
-        for topic in expected_topics:
-            topic_lower = topic.lower()
-            if topic_lower in answer_lower:
-                found_topics.append(topic)
-            else:
-                # Check for partial matches
-                topic_words = topic_lower.split()
-                if any(word in answer_lower for word in topic_words if len(word) > 3):
-                    found_topics.append(f"{topic} (partial)")
+        if not question_words:
+            return 0.0
         
-        return found_topics
+        overlap = len(question_words.intersection(response_words))
+        return min(overlap / len(question_words), 1.0)
     
-    async def run_evaluation(self, clear_memory_between: bool = True) -> Dict[str, Any]:
+    def _calculate_coherence(self, response: str) -> float:
+        """Calculate coherence based on sentence structure."""
+        sentences = nltk.sent_tokenize(response)
+        
+        if len(sentences) == 0:
+            return 0.0
+        
+        # Check for proper sentence structure
+        coherence_indicators = 0
+        total_checks = 0
+        
+        for sentence in sentences:
+            total_checks += 1
+            
+            # Check if sentence has reasonable length
+            if 10 <= len(sentence.split()) <= 50:
+                coherence_indicators += 1
+            
+            # Check if sentence starts with capital letter
+            if sentence.strip() and sentence.strip()[0].isupper():
+                coherence_indicators += 1
+                total_checks += 1
+            
+            # Check if sentence ends with proper punctuation
+            if sentence.strip() and sentence.strip()[-1] in '.!?':
+                coherence_indicators += 1
+                total_checks += 1
+        
+        return coherence_indicators / total_checks if total_checks > 0 else 0.0
+    
+    def _calculate_faithfulness(self, response: str, sources: List[Dict[str, Any]]) -> float:
+        """Calculate how well the response is grounded in sources."""
+        if not sources:
+            return 0.0
+        
+        response_words = set(re.findall(r'\w+', response.lower()))
+        source_words = set()
+        
+        for source in sources:
+            text = source.get('text', '') + source.get('text_preview', '')
+            source_words.update(re.findall(r'\w+', text.lower()))
+        
+        if not response_words:
+            return 0.0
+        
+        # Calculate overlap between response and source content
+        overlap = len(response_words.intersection(source_words))
+        return min(overlap / len(response_words), 1.0)
+    
+    def _calculate_source_coverage(self, sources: List[Dict[str, Any]], 
+                                 expected_sources: List[str] = None) -> float:
+        """Calculate how well the retrieved sources match expected sources."""
+        if not expected_sources:
+            return 1.0  # No specific expectation
+        
+        retrieved_sources = set()
+        for source in sources:
+            source_name = source.get('source', '')
+            retrieved_sources.add(source_name)
+        
+        expected_set = set(expected_sources)
+        overlap = len(retrieved_sources.intersection(expected_set))
+        
+        return overlap / len(expected_set) if expected_set else 1.0
+    
+    def _calculate_quality(self, response: str) -> float:
+        """Calculate overall quality of the response."""
+        if not response or len(response.strip()) < 10:
+            return 0.0
+        
+        quality_score = 0.0
+        
+        # Length check (not too short, not too long)
+        length = len(response)
+        if 50 <= length <= 1000:
+            quality_score += 0.3
+        elif length > 20:
+            quality_score += 0.15
+        
+        # Check for informative content
+        if any(keyword in response.lower() for keyword in ['transformer', 'attention', 'model', 'training', 'bert', 'gpt']):
+            quality_score += 0.3
+        
+        # Check for explanation indicators
+        if any(phrase in response.lower() for phrase in ['because', 'due to', 'however', 'therefore', 'this means']):
+            quality_score += 0.2
+        
+        # Check for technical depth
+        if any(term in response.lower() for term in ['architecture', 'mechanism', 'algorithm', 'approach', 'method']):
+            quality_score += 0.2
+        
+        return min(quality_score, 1.0)
+    
+    def run_evaluation(self, quick_mode: bool = False) -> Dict[str, Any]:
         """Run complete evaluation on all test questions."""
-        
-        logger.info("Starting RAG system evaluation...")
+        print("🔍 Starting RAG system evaluation...")
+        start_time = time.time()
         
         # Load test questions
-        questions = self.load_test_questions()
+        test_questions = self.load_test_questions()
         
-        # Initialize RAG system
-        rag_system = rag_manager.get_rag_system()
-        if not rag_system.is_initialized:
-            logger.info("Initializing RAG system for evaluation...")
-            await rag_system.initialize()
+        if quick_mode:
+            test_questions = test_questions[:3]  # Only first 3 questions for quick test
+            print(f"Running quick evaluation with {len(test_questions)} questions...")
+        else:
+            print(f"Running full evaluation with {len(test_questions)} questions...")
         
-        # Prepare context questions for questions that need memory
-        context_questions = [q for q in questions if not q.get('context_memory', False)][:4]
-        
-        # Run evaluation
         results = []
-        start_time = time.time()
+        category_scores = {}
         
-        for i, question_data in enumerate(questions):
-            if clear_memory_between and i > 0:
-                rag_system.clear_conversation_memory()
+        for i, question_data in enumerate(test_questions, 1):
+            print(f"📝 Evaluating question {i}/{len(test_questions)}: {question_data['question'][:80]}...")
             
-            result = await self.evaluate_single_question(
-                question_data, 
-                rag_system,
-                context_questions if question_data.get('context_memory', False) else None
+            # Get response from RAG system
+            rag_response = self.rag_system.chat(question_data['question'])
+            
+            if not rag_response['success']:
+                print(f"❌ Failed to get response: {rag_response.get('error', 'Unknown error')}")
+                continue
+            
+            # Evaluate the response
+            evaluation = self.evaluate_single_response(
+                question=question_data['question'],
+                response=rag_response['response'],
+                sources=rag_response['sources'],
+                expected_sources=question_data.get('expected_sources', [])
             )
+            
+            # Store result
+            result = {
+                "question_id": question_data['id'],
+                "question": question_data['question'],
+                "category": question_data['category'],
+                "difficulty": question_data['difficulty'],
+                "response": rag_response['response'],
+                "sources": rag_response['sources'],
+                "evaluation": evaluation,
+                "processing_time": rag_response.get('processing_time', 0)
+            }
             results.append(result)
             
-            # Small delay between questions
-            await asyncio.sleep(1)
+            # Track category performance
+            category = question_data['category']
+            if category not in category_scores:
+                category_scores[category] = []
+            category_scores[category].append(evaluation['overall_score'])
+            
+            print(f"✅ Overall score: {evaluation['overall_score']:.3f}")
         
+        # Calculate aggregate statistics
         total_time = time.time() - start_time
         
-        # Calculate summary statistics
-        summary = self._calculate_summary_stats(results, total_time)
+        if results:
+            overall_scores = [r['evaluation']['overall_score'] for r in results]
+            relevance_scores = [r['evaluation']['relevance_score'] for r in results]
+            coherence_scores = [r['evaluation']['coherence_score'] for r in results]
+            faithfulness_scores = [r['evaluation']['faithfulness_score'] for r in results]
+            
+            aggregate_stats = {
+                "total_questions": len(results),
+                "average_overall_score": sum(overall_scores) / len(overall_scores),
+                "average_relevance": sum(relevance_scores) / len(relevance_scores),
+                "average_coherence": sum(coherence_scores) / len(coherence_scores),
+                "average_faithfulness": sum(faithfulness_scores) / len(faithfulness_scores),
+                "total_evaluation_time": total_time,
+                "average_time_per_question": total_time / len(results)
+            }
+            
+            # Category breakdown
+            category_breakdown = {}
+            for category, scores in category_scores.items():
+                category_breakdown[category] = {
+                    "count": len(scores),
+                    "average_score": sum(scores) / len(scores),
+                    "max_score": max(scores),
+                    "min_score": min(scores)
+                }
+        else:
+            aggregate_stats = {"error": "No successful evaluations"}
+            category_breakdown = {}
+        
+        # Prepare final results
+        evaluation_results = {
+            "timestamp": time.time(),
+            "quick_mode": quick_mode,
+            "aggregate_statistics": aggregate_stats,
+            "category_breakdown": category_breakdown,
+            "detailed_results": results,
+            "system_stats": self.rag_system.get_system_stats()
+        }
         
         # Save results
-        evaluation_data = {
-            'timestamp': datetime.now().isoformat(),
-            'summary': summary,
-            'detailed_results': results,
-            'configuration': {
-                'total_questions': len(questions),
-                'clear_memory_between': clear_memory_between,
-                'rag_system_config': rag_system.get_system_status()
-            }
-        }
+        self.save_results(evaluation_results)
         
-        # Save to file
-        output_file = self.results_dir / f"evaluation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(evaluation_data, f, indent=2, ensure_ascii=False)
+        print(f"📊 Evaluation completed in {total_time:.2f} seconds")
+        if results:
+            print(f"📈 Average overall score: {aggregate_stats['average_overall_score']:.3f}")
         
-        logger.success(f"Evaluation completed! Results saved to {output_file}")
-        return evaluation_data
+        return evaluation_results
     
-    def _calculate_summary_stats(self, results: List[Dict[str, Any]], total_time: float) -> Dict[str, Any]:
-        """Calculate summary statistics from evaluation results."""
-        
-        valid_results = [r for r in results if 'error' not in r]
-        
-        if not valid_results:
-            return {'error': 'No valid results to analyze'}
-        
-        # Extract metrics
-        metrics_data = []
-        for result in valid_results:
-            metrics = result.get('metrics', {})
-            metrics_data.append({
-                'relevance': metrics.get('relevance', 0),
-                'accuracy': metrics.get('accuracy', 0),
-                'coherence': metrics.get('coherence', 0),
-                'faithfulness': metrics.get('faithfulness', 0),
-                'overall_score': metrics.get('overall_score', 0),
-                'response_time': result.get('response_time', 0),
-                'sources_count': result.get('sources_count', 0),
-                'chunks_retrieved': result.get('chunks_retrieved', 0),
-                'category': result.get('category', 'Unknown'),
-                'difficulty': result.get('difficulty', 'Unknown')
-            })
-        
-        df = pd.DataFrame(metrics_data)
-        
-        # Calculate statistics
-        summary = {
-            'total_questions': len(results),
-            'successful_evaluations': len(valid_results),
-            'failed_evaluations': len(results) - len(valid_results),
-            'total_evaluation_time': total_time,
-            'avg_response_time': df['response_time'].mean(),
-            
-            # Metric scores
-            'overall_metrics': {
-                'relevance': {
-                    'mean': df['relevance'].mean(),
-                    'std': df['relevance'].std(),
-                    'min': df['relevance'].min(),
-                    'max': df['relevance'].max()
-                },
-                'accuracy': {
-                    'mean': df['accuracy'].mean(),
-                    'std': df['accuracy'].std(),
-                    'min': df['accuracy'].min(),
-                    'max': df['accuracy'].max()
-                },
-                'coherence': {
-                    'mean': df['coherence'].mean(),
-                    'std': df['coherence'].std(),
-                    'min': df['coherence'].min(),
-                    'max': df['coherence'].max()
-                },
-                'faithfulness': {
-                    'mean': df['faithfulness'].mean(),
-                    'std': df['faithfulness'].std(),
-                    'min': df['faithfulness'].min(),
-                    'max': df['faithfulness'].max()
-                },
-                'overall_score': {
-                    'mean': df['overall_score'].mean(),
-                    'std': df['overall_score'].std(),
-                    'min': df['overall_score'].min(),
-                    'max': df['overall_score'].max()
-                }
-            },
-            
-            # Category analysis
-            'category_performance': df.groupby('category')['overall_score'].agg(['mean', 'count']).to_dict(),
-            'difficulty_performance': df.groupby('difficulty')['overall_score'].agg(['mean', 'count']).to_dict(),
-            
-            # Retrieval statistics
-            'retrieval_stats': {
-                'avg_sources_per_question': df['sources_count'].mean(),
-                'avg_chunks_retrieved': df['chunks_retrieved'].mean(),
-            }
-        }
-        
-        return summary
+    def save_results(self, results: Dict[str, Any]):
+        """Save evaluation results to file."""
+        try:
+            with open(EVALUATION_RESULTS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2, ensure_ascii=False)
+            print(f"💾 Results saved to {EVALUATION_RESULTS_FILE}")
+        except Exception as e:
+            print(f"❌ Failed to save results: {e}")
     
-    def generate_report(self, evaluation_data: Dict[str, Any]) -> str:
+    def generate_report(self, results: Dict[str, Any] = None) -> str:
         """Generate a human-readable evaluation report."""
+        if results is None:
+            # Load latest results
+            if EVALUATION_RESULTS_FILE.exists():
+                with open(EVALUATION_RESULTS_FILE, 'r', encoding='utf-8') as f:
+                    results = json.load(f)
+            else:
+                return "No evaluation results found."
         
-        summary = evaluation_data['summary']
+        report = []
+        report.append("=" * 60)
+        report.append("RAG SYSTEM EVALUATION REPORT")
+        report.append("=" * 60)
+        report.append("")
         
-        report_lines = [
-            "# RAG System Evaluation Report",
-            f"**Evaluation Date:** {evaluation_data['timestamp']}",
-            "",
-            "## Summary",
-            f"- **Total Questions:** {summary['total_questions']}",
-            f"- **Successful Evaluations:** {summary['successful_evaluations']}",
-            f"- **Failed Evaluations:** {summary['failed_evaluations']}",
-            f"- **Total Evaluation Time:** {summary['total_evaluation_time']:.2f} seconds",
-            f"- **Average Response Time:** {summary['avg_response_time']:.2f} seconds",
-            "",
-            "## Overall Performance",
-        ]
+        # Summary
+        stats = results.get("aggregate_statistics", {})
+        if "average_overall_score" in stats:
+            report.append(f"📊 SUMMARY")
+            report.append(f"   Total Questions: {stats['total_questions']}")
+            report.append(f"   Average Score: {stats['average_overall_score']:.3f}/1.0")
+            report.append(f"   Average Relevance: {stats['average_relevance']:.3f}/1.0")
+            report.append(f"   Average Coherence: {stats['average_coherence']:.3f}/1.0")
+            report.append(f"   Average Faithfulness: {stats['average_faithfulness']:.3f}/1.0")
+            report.append(f"   Total Time: {stats['total_evaluation_time']:.2f}s")
+            report.append("")
         
-        metrics = summary['overall_metrics']
-        for metric_name, metric_data in metrics.items():
-            report_lines.extend([
-                f"### {metric_name.title()}",
-                f"- **Mean:** {metric_data['mean']:.3f}",
-                f"- **Standard Deviation:** {metric_data['std']:.3f}",
-                f"- **Range:** {metric_data['min']:.3f} - {metric_data['max']:.3f}",
-                ""
-            ])
+        # Category breakdown
+        categories = results.get("category_breakdown", {})
+        if categories:
+            report.append("📈 PERFORMANCE BY CATEGORY")
+            for category, data in categories.items():
+                report.append(f"   {category}: {data['average_score']:.3f} (n={data['count']})")
+            report.append("")
         
-        # Add category and difficulty analysis
-        report_lines.extend([
-            "## Performance by Category",
-            ""
-        ])
+        # System info
+        system_stats = results.get("system_stats", {})
+        if system_stats:
+            report.append("🔧 SYSTEM CONFIGURATION")
+            report.append(f"   Total Chunks: {system_stats.get('total_chunks', 'N/A')}")
+            report.append(f"   Vector Dimension: {system_stats.get('vector_dimension', 'N/A')}")
+            report.append(f"   Embedding Model: {system_stats.get('embedding_model', 'N/A')}")
+            report.append("")
         
-        for category, performance in summary['category_performance'].items():
-            report_lines.append(f"- **{category}:** {performance['mean']:.3f} (n={performance['count']})")
-        
-        report_lines.extend([
-            "",
-            "## Performance by Difficulty",
-            ""
-        ])
-        
-        for difficulty, performance in summary['difficulty_performance'].items():
-            report_lines.append(f"- **{difficulty}:** {performance['mean']:.3f} (n={performance['count']})")
-        
-        return "\n".join(report_lines) 
+        return "\n".join(report) 

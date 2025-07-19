@@ -1,216 +1,216 @@
-# RAG Application with Conversational Memory
+# RAG Application
 
-A comprehensive Retrieval-Augmented Generation (RAG) application that ingests content from research papers, creates a vector database for semantic retrieval, and powers a conversational bot with memory for interactions.
+A Retrieval-Augmented Generation system that analyzes research papers and provides conversational Q&A with memory support.
 
-## Features
+## Overview
 
-- 📄 **PDF Ingestion**: Extracts and processes text from 5 research papers
-- 🔍 **Vector Database**: Uses FAISS for efficient similarity search
-- 🤖 **Language Model**: Integrates open-source models from Hugging Face
-- 💭 **Conversational Memory**: Maintains context over the last 4 interactions
-- 🌐 **Web Interface**: React frontend for easy interaction
-- 📊 **Evaluation Framework**: Comprehensive testing and evaluation metrics
+This application processes five key NLP research papers and allows users to ask questions about their content through a chat interface. The system maintains conversation history and provides source attribution for all responses.
 
-## Architecture
+### Research Papers Included
 
-```
-RAG Application
-├── backend/           # FastAPI server and RAG implementation
-├── frontend/          # React web interface
-├── data/              # PDF documents and processed chunks
-├── evaluation/        # Test questions and evaluation metrics
-└── reports/           # Generated evaluation reports
-```
+- Attention Is All You Need (Transformer architecture)
+- BERT: Pre-training of Deep Bidirectional Transformers
+- Language Models are Few-Shot Learners (GPT-3)
+- RoBERTa: A Robustly Optimized BERT Pretraining Approach
+- Exploring the Limits of Transfer Learning with T5
 
-## Research Papers Used
+## Prerequisites
 
-1. [Attention Is All You Need](https://arxiv.org/pdf/1706.03762.pdf) - Transformer architecture
-2. [BERT: Pre-training of Deep Bidirectional Transformers](https://arxiv.org/pdf/1810.04805.pdf)
-3. [GPT-3: Language Models are Few-Shot Learners](https://arxiv.org/pdf/2005.14165.pdf)
-4. [RoBERTa: A Robustly Optimized BERT Pretraining Approach](https://arxiv.org/pdf/1907.11692.pdf)
-5. [T5: Text-to-Text Transfer Transformer](https://arxiv.org/pdf/1910.10683.pdf)
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.8+ with pip
-- Node.js 16+ with npm (for frontend)
+- Python 3.8 or higher
+- Node.js 16+ (for frontend)
 - Git
 
-### Option 1: Using the Startup Script (Recommended)
+## Installation
+
+### Quick Start
+
+The easiest way to get started is using the provided startup script:
 
 ```bash
+# Clone and navigate to the project
+git clone <repository-url>
+cd RAG_Application
+
 # Install all dependencies
 python start_application.py install
-
-# Start the backend server
-python start_application.py backend
-
-# In a new terminal, start the frontend (optional)
-python start_application.py frontend
 ```
 
-### Option 2: Manual Setup
+### Manual Setup
+
+If you prefer to set up components individually:
 
 #### Backend Setup
 
 ```bash
 cd backend
+
+# Create virtual environment
+python -m venv venv
+
+# Activate virtual environment
+# On Windows:
+venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
-python main.py
 ```
 
-#### Frontend Setup (Optional)
+#### Frontend Setup
 
 ```bash
 cd frontend
 npm install
-npm run dev
 ```
 
-### First Run
+## Running the Application
 
-1. **Start the backend**: The server will start on `http://localhost:8000`
-2. **System initialization**: On first run, the system will download research papers and build the vector database
-3. **Access the application**:
-   - **API Documentation**: `http://localhost:8000/docs`
-   - **Web Interface**: `http://localhost:3000` (if frontend is running)
-
-### Testing the System
+### Option 1: Using Startup Scripts
 
 ```bash
-# Quick test
-python start_application.py quick-test
+# Start backend server
+python start_application.py backend
 
-# Full evaluation
-python start_application.py evaluate
+# In a new terminal, start frontend (optional)
+python start_application.py frontend
 ```
 
-## Usage
+### Option 2: Manual Startup
 
-1. The application will automatically download and process the research papers
-2. Open your browser to `http://localhost:3000`
-3. Start chatting with the RAG bot about the content in the papers
-4. The bot maintains memory of your last 4 interactions
-
-## Evaluation
-
-Run the evaluation suite with:
+#### Start Backend
 
 ```bash
 cd backend
-python evaluate.py
+source venv/bin/activate  # or venv\Scripts\activate on Windows
+python main.py
 ```
 
-This will run 10 predefined questions and generate evaluation metrics using the implemented framework.
+The backend will start on `http://localhost:8001`
 
-## Project Structure
+#### Start Frontend (Optional)
 
-- `backend/app/`: Core RAG implementation
-- `backend/models/`: Vector database and embeddings
-- `backend/evaluation/`: Evaluation framework and metrics
-- `frontend/src/`: React components and UI
-- `data/`: PDF storage and processed chunks
-- `reports/`: Generated evaluation reports
+```bash
+cd frontend
+npm run dev
+```
 
-## Technologies Used
+The frontend will be available at `http://localhost:3000`
 
-- **Backend**: FastAPI, Hugging Face Transformers, FAISS, PyPDF2
-- **Frontend**: Next.js 15, React 19, JavaScript, Tailwind CSS
-- **ML/AI**: Sentence Transformers, Open-source LLMs
-- **Evaluation**: Custom metrics framework
+## First Run
 
-## API Endpoints
+On the first startup, the system will:
 
-The FastAPI backend provides the following main endpoints:
+1. Download the required research papers automatically
+2. Process the PDFs and extract text content
+3. Build a vector database for semantic search
+4. Initialize the language model
 
-- `GET /` - Basic application information
-- `GET /health` - System health check
-- `POST /chat` - Send a message to the RAG system
-- `GET /status` - Detailed system status
-- `POST /initialize` - Initialize/rebuild the system
-- `POST /memory/clear` - Clear conversation memory
-- `GET /documents/stats` - Document processing statistics
+This process may take a few minutes depending on your internet connection and system performance.
 
-Full API documentation is available at `http://localhost:8000/docs` when the server is running.
+## Usage
 
-## Features Implemented
+### Web Interface
 
-### ✅ Core Requirements (100 marks)
+Navigate to `http://localhost:3000` to access the chat interface where you can:
 
-1. **PDF Ingestion & Data Sourcing (20 marks)**
+- Ask questions about the research papers
+- View source attribution for responses
+- Monitor system status and statistics
+- Clear conversation memory
 
-   - ✅ Downloads 5 specified research papers automatically
-   - ✅ Robust text extraction with fallback methods
-   - ✅ Advanced preprocessing and chunking
+### API Access
 
-2. **Vector Database Creation (20 marks)**
+The backend provides a REST API at `http://localhost:8001` with endpoints for:
 
-   - ✅ FAISS-based vector database
-   - ✅ Efficient similarity search
-   - ✅ Proper embedding generation and storage
+- `/chat` - Send messages to the RAG system
+- `/status` - Check system health and statistics
+- `/docs` - View API documentation
 
-3. **Open Source Language Model Integration (20 marks)**
+## Example Questions
 
-   - ✅ Hugging Face model integration
-   - ✅ Context-aware response generation
-   - ✅ Fallback model support
+Try asking questions like:
 
-4. **Conversational Bot with Memory (10 marks)**
+- "What is the main innovation in the Transformer architecture?"
+- "How does BERT's training differ from GPT?"
+- "What are the key improvements in RoBERTa?"
+- "Explain T5's text-to-text approach"
 
-   - ✅ Maintains last 4 interactions
-   - ✅ Context-aware responses
-   - ✅ Memory management
+## System Requirements
 
-5. **Interaction & Evaluation (20 marks)**
-
-   - ✅ 10 comprehensive test questions
-   - ✅ Custom evaluation framework
-   - ✅ Multiple evaluation metrics
-
-6. **Final Report (10 marks)**
-   - ✅ Automated report generation
-   - ✅ Comprehensive evaluation results
-   - ✅ Technical implementation details
-
-### 🌟 Additional Features
-
-- **Modern Web Interface**: React-based chat interface
-- **Real-time System Monitoring**: Live status dashboard
-- **Document Statistics**: Detailed analytics
-- **API Documentation**: Comprehensive REST API
-- **Startup Scripts**: Easy application management
-- **Error Handling**: Robust error recovery
-- **Logging**: Comprehensive logging system
-
-## Evaluation Results
-
-The system includes a comprehensive evaluation framework that tests:
-
-- **Relevance**: How well answers address questions
-- **Accuracy**: Correctness based on source documents
-- **Coherence**: Quality and clarity of responses
-- **Faithfulness**: Consistency with source material
-- **Context Awareness**: Effective use of conversation memory
-
-Run `python start_application.py evaluate` for detailed evaluation results.
+- **Memory**: 4GB RAM minimum, 8GB recommended
+- **Storage**: 2GB free space for models and data
+- **Network**: Required for initial model downloads
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Port already in use**: Change the port in `backend/config.py`
-2. **Memory issues**: Reduce chunk size or use smaller models
-3. **PDF download fails**: Check internet connection and firewall
-4. **Model loading errors**: Ensure sufficient disk space and memory
+**Port conflicts**: The default ports are 8001 (backend) and 3000 (frontend). If these are in use, modify the configuration in `backend/config.py`.
 
-### System Requirements
+**Memory errors**: If you encounter memory issues, the system will automatically fall back to simpler models.
 
-- **RAM**: 4GB minimum, 8GB recommended
-- **Storage**: 2GB free space for models and data
-- **Internet**: Required for initial model and PDF downloads
+**Network timeouts**: For package installation issues, try:
+```bash
+cd backend
+python install_packages.py
+```
+
+**Missing dependencies**: Install packages individually if the batch installation fails:
+```bash
+pip install fastapi uvicorn pydantic
+pip install requests PyPDF2 nltk
+```
+
+### Logs and Debugging
+
+- Backend logs appear in the terminal where you started the server
+- Frontend logs are available in the browser developer console
+- System status can be checked via the web interface or `/health` endpoint
+
+## Development
+
+### Project Structure
+
+```
+RAG_Application/
+├── backend/                 # FastAPI backend
+│   ├── app/                # Core application modules
+│   ├── data/               # Downloaded papers and processed data
+│   ├── evaluation/         # Test questions and evaluation framework
+│   └── main.py            # Application entry point
+├── frontend/               # Next.js frontend
+│   ├── components/        # React components
+│   ├── lib/              # API client and utilities
+│   └── app/              # Next.js app router pages
+└── start_application.py   # Convenience startup script
+```
+
+### Running Tests
+
+```bash
+cd backend
+python evaluate.py quick     # Quick test with 3 questions
+python evaluate.py full      # Full evaluation with 10 questions
+```
+
+## Features
+
+- **Automatic PDF processing** from research paper URLs
+- **Vector-based semantic search** using FAISS
+- **Conversational memory** maintaining last 4 interactions
+- **Source attribution** for all responses
+- **Real-time system monitoring**
+- **Comprehensive evaluation framework**
+
+## Technical Details
+
+- **Backend**: FastAPI with Python
+- **Frontend**: Next.js with React
+- **Vector Database**: FAISS for similarity search
+- **Language Models**: Hugging Face transformers with fallbacks
+- **Text Processing**: PyPDF2 for extraction, custom chunking
 
 ## License
 
-This project is for educational purposes as part of an assignment.
+This project is developed for educational purposes.

@@ -1,0 +1,27 @@
+# Minimal requirements for RAG Application
+# Install these first, then add more packages gradually
+
+# Core web framework (lightweight first)
+fastapi>=0.100.0
+uvicorn>=0.20.0
+
+# PDF processing (essential)
+PyPDF2>=3.0.0
+requests>=2.25.0
+
+# Basic utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Text processing (install separately)
+numpy>=1.24.0
+nltk>=3.8.0
+
+# Vector database (CPU version, smaller)
+faiss-cpu>=1.7.0
+
+# Data handling
+pandas>=2.0.0
+
+# Development
+pytest>=7.0.0 
